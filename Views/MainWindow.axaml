@@ -1,0 +1,217 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:PS3HddTool.Avalonia.ViewModels"
+        xmlns:models="using:PS3HddTool.Core.Models"
+        x:Class="PS3HddTool.Avalonia.Views.MainWindow"
+        Title="PS3 HDD Tool"
+        Width="1100" Height="750"
+        MinWidth="800" MinHeight="600"
+        WindowStartupLocation="CenterScreen"
+        Icon="/Assets/icon.png">
+
+    <Window.Styles>
+        <Style Selector="TextBlock.header">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="#1E1E2E"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="16"/>
+            <Setter Property="Margin" Value="4"/>
+        </Style>
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="#5B6EF5"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Padding" Value="16,8"/>
+            <Setter Property="CornerRadius" Value="4"/>
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="CornerRadius" Value="4"/>
+        </Style>
+    </Window.Styles>
+
+    <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="8">
+
+        <!-- Top Bar: Disk Source & Key Entry -->
+        <Border Classes="card" Grid.Row="0">
+            <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto">
+
+                <!-- Row 0: Source buttons -->
+                <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,0,0,12">
+                    <TextBlock Text="PS3 HDD Tool" FontSize="18" FontWeight="Bold" VerticalAlignment="Center"
+                               Foreground="#5B6EF5" Margin="0,0,16,0"/>
+                    <Button Content="Open Image File" Click="OnOpenImage" Classes="primary"
+                            IsEnabled="{Binding !IsBusy}"/>
+                    <Button Content="Open Physical Drive" Click="OnOpenPhysicalDrive" Classes="primary"
+                            IsEnabled="{Binding !IsBusy}"/>
+                    <Separator Width="1" Background="#444" Margin="8,0"/>
+                    <TextBlock Text="{Binding DiskInfo.Source, FallbackValue='No disk loaded'}"
+                               VerticalAlignment="Center" Foreground="#999"/>
+                    <Separator Width="1" Background="#444" Margin="8,0"/>
+                    <Button Content="About" Click="OnAbout" FontSize="12"
+                            VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <!-- Row 1: Key entry and decrypt -->
+                <Grid Grid.Row="1" Grid.Column="0" ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
+                    <TextBlock Text="EID Root Key:" VerticalAlignment="Center" Margin="0,0,8,0" Grid.Column="0"/>
+                    <TextBox Grid.Column="1" Text="{Binding EidRootKeyHex}"
+                             Watermark="Enter 96-character hex EID Root Key (48 bytes)..."
+                             FontFamily="Consolas,Courier New,monospace" FontSize="13"
+                             IsEnabled="{Binding IsDiskOpen}" Margin="0,0,8,0"/>
+                    <Button Grid.Column="2" Content="Decrypt" Click="OnDecrypt" Classes="primary"
+                            IsEnabled="{Binding IsDiskOpen}"/>
+                </Grid>
+            </Grid>
+        </Border>
+
+        <!-- Main Content: Split between tree and details -->
+        <Grid Grid.Row="1" ColumnDefinitions="350,8,*" Margin="0,4">
+
+            <!-- Left: File Tree -->
+            <Border Classes="card" Grid.Column="0">
+                <Grid RowDefinitions="Auto,*">
+                    <TextBlock Classes="header" Text="Filesystem" Grid.Row="0"/>
+                    <TreeView Grid.Row="1" ItemsSource="{Binding FileTree}"
+                              SelectedItem="{Binding SelectedNode}"
+                              Name="FileTreeView">
+                        <TreeView.ItemTemplate>
+                            <TreeDataTemplate ItemsSource="{Binding Children}">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="{Binding Icon}" FontSize="14"/>
+                                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding SizeFormatted}" Foreground="#777" FontSize="11"
+                                               VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </StackPanel>
+                            </TreeDataTemplate>
+                        </TreeView.ItemTemplate>
+                    </TreeView>
+                </Grid>
+            </Border>
+
+            <GridSplitter Grid.Column="1" ResizeDirection="Columns" Background="Transparent"/>
+
+            <!-- Right: Details & Partitions -->
+            <Grid Grid.Column="2" RowDefinitions="Auto,*">
+
+                <!-- Partition Info -->
+                <Border Classes="card" Grid.Row="0" IsVisible="{Binding IsDecrypted}">
+                    <Grid RowDefinitions="Auto,Auto">
+                        <TextBlock Classes="header" Text="💿 Partitions" Grid.Row="0"/>
+                        <ItemsControl Grid.Row="1" ItemsSource="{Binding Partitions}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,2">
+                                        <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding SizeFormatted}" Foreground="#999"
+                                                   Margin="16,0" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding Type}" Foreground="#5B6EF5"
+                                                   FontSize="11" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
+                </Border>
+
+                <!-- File Details / Actions -->
+                <Border Classes="card" Grid.Row="1">
+                    <Grid RowDefinitions="Auto,*,Auto">
+                        <TextBlock Classes="header" Text="Details" Grid.Row="0"/>
+
+                        <!-- Selected file details -->
+                        <StackPanel Grid.Row="1" Spacing="6"
+                                    IsVisible="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNotNull}}">
+                            <Grid ColumnDefinitions="100,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" >
+                                <TextBlock Text="Name:" Foreground="#999" Grid.Row="0"/>
+                                <TextBlock Text="{Binding SelectedNode.Name}" Grid.Row="0" Grid.Column="1"
+                                           FontWeight="SemiBold"/>
+
+                                <TextBlock Text="Path:" Foreground="#999" Grid.Row="1"/>
+                                <TextBlock Text="{Binding SelectedNode.FullPath}" Grid.Row="1" Grid.Column="1"
+                                           FontFamily="Consolas,Courier New,monospace" FontSize="12"/>
+
+                                <TextBlock Text="Size:" Foreground="#999" Grid.Row="2"/>
+                                <TextBlock Text="{Binding SelectedNode.SizeFormatted}" Grid.Row="2" Grid.Column="1"/>
+
+                                <TextBlock Text="Modified:" Foreground="#999" Grid.Row="3"/>
+                                <TextBlock Text="{Binding SelectedNode.Modified}" Grid.Row="3" Grid.Column="1"/>
+
+                                <TextBlock Text="Permissions:" Foreground="#999" Grid.Row="4"/>
+                                <TextBlock Text="{Binding SelectedNode.Permissions}" Grid.Row="4" Grid.Column="1"
+                                           FontFamily="Consolas,Courier New,monospace"/>
+                            </Grid>
+
+                            <!-- Image preview -->
+                            <Border Margin="0,8,0,0" CornerRadius="4" ClipToBounds="True"
+                                    IsVisible="{Binding HasImagePreview}" MaxHeight="300"
+                                    Background="#11FFFFFF">
+                                <Image Source="{Binding ImagePreview}" Stretch="Uniform"
+                                       MaxHeight="280" Margin="4"/>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- No selection placeholder -->
+                        <TextBlock Grid.Row="1" Text="Select a file or folder to view details."
+                                   Foreground="#666" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                   IsVisible="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNull}}"/>
+
+                        <!-- Action buttons -->
+                        <StackPanel Grid.Row="2" Spacing="6" Margin="0,12,0,0">
+                            <StackPanel Orientation="Horizontal" Spacing="8"
+                                        IsVisible="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNotNull}}">
+                                <Button Content="Extract Selected" Click="OnExtract" Classes="primary"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="8"
+                                        IsVisible="{Binding IsFilesystemMounted}">
+                                <Button Content="Create Directory" Click="OnCreateDirectory"/>
+                                <Button Content="Copy File to PS3" Click="OnCopyFileToPs3"/>
+                                <Button Content="Copy Folder to PS3" Click="OnCopyFolderToPs3"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="8"
+                                        IsVisible="{Binding IsFilesystemMounted}">
+                                <CheckBox Content="Fake Write Test (no actual writes)" 
+                                          IsChecked="{Binding DryRunMode}" FontSize="12"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+
+        <!-- Log Panel -->
+        <Border Classes="card" Grid.Row="2" MaxHeight="140">
+            <Grid RowDefinitions="Auto,*">
+                <TextBlock Classes="header" Text="Log" Grid.Row="0"/>
+                <ListBox Grid.Row="1" ItemsSource="{Binding LogMessages}" Name="LogList"
+                         FontFamily="Consolas,Courier New,monospace" FontSize="11"
+                         Background="Transparent">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}" Foreground="#AAA"/>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
+        </Border>
+
+        <!-- Status Bar -->
+        <Border Grid.Row="3" Background="#181825" Padding="12,6" CornerRadius="0,0,8,8">
+            <Grid ColumnDefinitions="*,Auto,Auto">
+                <TextBlock Text="{Binding StatusText}" Foreground="#AAA" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1" Text="{Binding ProgressText}" Foreground="#8BE9FD" 
+                           VerticalAlignment="Center" Margin="12,0" FontSize="12"
+                           FontFamily="Consolas,Courier New,monospace"
+                           IsVisible="{Binding IsBusy}"/>
+                <ProgressBar Grid.Column="2" Width="160" Height="12"
+                             IsVisible="{Binding IsBusy}"
+                             Minimum="0" Maximum="100"
+                             Value="{Binding ProgressValue}"
+                             IsIndeterminate="{Binding IsProgressIndeterminate}"
+                             Foreground="#50FA7B"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
