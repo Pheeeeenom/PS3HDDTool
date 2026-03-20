@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "PS3HddTool.Core/1.0.0": {
+        "runtime": {
+          "PS3HddTool.Core.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "PS3HddTool.Core/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

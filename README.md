@@ -1,180 +1,135 @@
 # PS3 HDD Tool
 
-A cross-platform desktop application for decrypting, browsing, extracting, and writing files to PS3 CECHA (Fat NAND) encrypted hard drives.
+A cross-platform GUI application for decrypting and browsing PS3 hard drives using your console's EID Root Key.
 
-This is the first known tool capable of writing encrypted data directly to a PS3 HDD that the console accepts without triggering filesystem corruption.
-
----
+Built with **.NET 8** and **Avalonia UI** — runs on Windows, macOS, and Linux.
 
 ## Features
 
-### Decryption
-- AES-CBC-192 encryption with bswap16 preprocessing for Fat NAND models (CECHA/B/C/E)
-- Fast-path detection for known configurations (~1 second mount)
-- Full scan fallback for unknown or non-standard setups
-- EID Root Key input (48-byte key derived from console-specific data)
+- **Decrypt PS3 HDD** — AES-XTS-128 decryption using your EID Root Key
+- **Support for disk images and physical drives** — Works with `.img`, `.bin`, `.dd`, `.raw` files or direct device access
+- **Browse UFS2 filesystem** — Navigate the PS3's FreeBSD-derived file system with a tree view
+- **Extract files and folders** — Export individual files or entire directory trees
+- **Partition viewer** — See the PS3's disk layout and partition structure
+- **Activity log** — Detailed logging of all operations
 
-### Filesystem Browser
-- Full UFS2 filesystem parsing: superblock, cylinder groups, inodes, directory entries
-- Lazy-loading directory tree with unlimited depth traversal
-- PARAM.SFO parsing: game directories display their title (e.g. "BLES80608 -- Super Motherload")
-- Image preview for PNG/JPG files directly from the encrypted drive
-- File details panel: size, permissions, timestamps
+## Prerequisites
 
-### Extract
-- Stream-based extraction supporting files of any size (tested with 34GB+)
-- Progress bar with real-time speed and ETA display
-- Extract individual files or entire directory trees
-
-### Write
-- Create directories at any level of the filesystem
-- Copy individual files from PC to any PS3 directory
-- Copy entire folder structures recursively with progress tracking
-- Double indirect block support for files up to ~64GB
-- Automatic directory block expansion when existing blocks are full
-- Cross-cylinder-group allocation when the local CG is full
-- Fake write test mode for safe verification before committing changes
-
-### PS3 Compatibility
-All written data matches the PS3's own filesystem conventions:
-- Directory permissions: 0777 (rwxrwxrwx)
-- File permissions: 0666 (rw-rw-rw-)
-- Correct inode fields: di_gen, di_blksize, di_blocks (allocated, not file-size-based)
-- Proper timestamp layout matching FreeBSD UFS2 dinode2 structure
-- CG header timestamp updates on every modification
-
----
-
-## Requirements
-
-- .NET 10 SDK (for building from source)
-- Administrator/root privileges (required for physical drive access)
-- PS3 EID Root Key (48 bytes: 32-byte encryption key + 16-byte IV)
-
-## Supported Consoles
-
-- **Confirmed working:** CECHA (60GB Fat, NAND flash, 4 USB ports)
-- **Should work:** CECHB, CECHC, CECHE (other Fat NAND models using CBC-192)
-- **Not yet tested:** Slim/NOR models (AES-XTS-128 -- read infrastructure exists, write not implemented)
-
----
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- Your PS3 console's **EID Root Key** (32 bytes / 64 hex characters)
 
 ## Building
 
-### From source
+```bash
+# Clone or extract the project
+cd PS3HddTool
 
-```
+# Restore packages
+dotnet restore
+
+# Build
 dotnet build
+
+# Run
 dotnet run --project PS3HddTool.Avalonia
 ```
 
-### Single-file executable
+### Publish a self-contained executable
 
+```bash
+# Windows
+dotnet publish PS3HddTool.Avalonia -c Release -r win-x64 --self-contained
+
+# Linux
+dotnet publish PS3HddTool.Avalonia -c Release -r linux-x64 --self-contained
+
+# macOS (Intel)
+dotnet publish PS3HddTool.Avalonia -c Release -r osx-x64 --self-contained
+
+# macOS (Apple Silicon)
+dotnet publish PS3HddTool.Avalonia -c Release -r osx-arm64 --self-contained
 ```
-dotnet publish PS3HddTool.Avalonia -c Release -r win-x64
-```
-
-Output: `PS3HddTool.Avalonia/bin/Release/net10.0/win-x64/publish/PS3HddTool.exe`
-
-Other platforms: replace `win-x64` with `linux-x64`, `osx-x64`, or `osx-arm64`.
-
----
 
 ## Usage
 
-1. Connect the PS3 HDD to your PC via USB/SATA adapter
-2. Launch PS3 HDD Tool as administrator
-3. Click "Open Physical Drive" and select the PS3 drive
-4. Enter your 96-character hex EID Root Key and click "Decrypt"
-5. Browse the filesystem, extract files, or write new content
+1. **Open a disk source**
+   - Click **Open Image File** to load a disk image (`.img`, `.bin`, `.dd`, `.raw`)
+   - Click **Open Physical Drive** to access a PS3 HDD connected via USB/SATA adapter
 
-### Writing files to PS3
+2. **Enter your EID Root Key**
+   - Paste the 64-character hex string into the key field
+   - Accepted formats: `AABBCC...`, `AA BB CC...`, `AA:BB:CC...`
 
-1. Navigate to the target directory in the tree (or leave unselected for root)
-2. Click "Copy File to PS3" or "Copy Folder to PS3"
-3. Select the file/folder from your PC
-4. The tool encrypts and writes the data directly to the drive
-5. Put the drive back in the PS3 -- your files will be there
+3. **Decrypt**
+   - Click **Decrypt** — the tool will derive the AES-XTS keys and attempt to mount the UFS2 filesystem
+   - The partition table and filesystem structure will appear if successful
 
-### Fake write test
+4. **Browse and extract**
+   - Navigate the filesystem tree on the left
+   - Select any file or folder to see its details
+   - Click **Extract Selected** to save files to your computer
 
-Enable "Fake Write Test" mode to see exactly what would be written without modifying the drive. The log panel shows every operation that would be performed, including byte offsets and data sizes.
+## How It Works
 
----
+### Encryption
+The PS3 encrypts its HDD using **AES-XTS-128**. The encryption keys are derived from the console's **EID Root Key** — a unique 32-byte key stored in each console's NAND/NOR flash memory.
+
+The tool supports two key derivation paths:
+- **Standard derivation**: HMAC-SHA1 of the EID Root Key halves with a fixed seed
+- **Per-drive derivation**: AES-CBC decryption of encrypted ATA key data from the HDD header using the EID Root Key
+
+### Filesystem
+The PS3's GameOS partition uses **UFS2** (Unix File System 2), the same filesystem used by FreeBSD. The tool implements a read-only UFS2 parser that handles:
+- Superblock parsing
+- Cylinder group navigation
+- Inode reading (direct, indirect, double/triple indirect blocks)
+- Directory entry parsing
+- File data extraction
 
 ## Project Structure
 
 ```
 PS3HddTool/
-  PS3HddTool.Core/           Core library (no UI dependency)
-    Crypto/
-      AesCbc192.cs            AES-CBC-192 encrypt/decrypt
-      AesXts128.cs            AES-XTS-128 (Slim/NOR models)
-      Bswap16.cs              16-bit byte-swap preprocessing
-      Ps3KeyDerivation.cs     EID Root Key to ATA key derivation
-    Disk/
-      DiskSource.cs           Physical drive and image file I/O
-      DecryptedDiskSourceCbc.cs   CBC-192 transparent decrypt/encrypt layer
-      DecryptedDiskSource.cs      XTS-128 transparent decrypt layer
-    FileSystem/
-      Ufs2FileSystem.cs       UFS2 read operations (mount, inodes, directories)
-      Ufs2Writer.cs           UFS2 write operations (create dir, write file, bitmaps)
-      ParamSfo.cs             PARAM.SFO parser for game metadata
-    Models/
-      FileTreeNode.cs         Tree node model for the UI
-
-  PS3HddTool.Avalonia/       Cross-platform GUI (Avalonia UI)
-    Views/
-      MainWindow.axaml        Main window layout
-      MainWindow.axaml.cs     Event handlers and dialogs
-    ViewModels/
-      MainViewModel.cs        Application logic and commands
+├── PS3HddTool.sln                    # Solution file
+├── PS3HddTool.Core/                  # Core library (no GUI dependencies)
+│   ├── Crypto/
+│   │   ├── AesXts128.cs              # AES-XTS-128 implementation
+│   │   └── Ps3KeyDerivation.cs       # EID Root Key → encryption keys
+│   ├── Disk/
+│   │   ├── DiskSource.cs             # Image file & physical disk readers
+│   │   ├── DecryptedDiskSource.cs    # Transparent decryption wrapper
+│   │   └── Ps3DiskLayout.cs          # Partition table parser
+│   ├── FileSystem/
+│   │   └── Ufs2FileSystem.cs         # UFS2 filesystem implementation
+│   └── Models/
+│       └── FileTreeNode.cs           # UI model for file browser
+├── PS3HddTool.Avalonia/              # GUI application
+│   ├── ViewModels/
+│   │   └── MainViewModel.cs          # Main application logic (MVVM)
+│   ├── Views/
+│   │   ├── MainWindow.axaml          # UI layout
+│   │   └── MainWindow.axaml.cs       # Event handlers
+│   ├── App.axaml / App.axaml.cs      # Avalonia application entry
+│   └── Program.cs                    # Entry point
+└── README.md
 ```
 
----
+## Important Notes
 
-## Technical Details
+- **Read-only**: This tool only reads from the disk. It never writes to your PS3 HDD.
+- **EID Root Key**: You need to obtain this from your own console (e.g., via PS3Xploit, hardware flasher, or UART dump). This tool does not extract the key.
+- **Large drives**: For HDDs over 500GB, initial directory loading may take a moment as sectors are decrypted on-the-fly.
+- **Key verification**: If the UFS2 superblock isn't found after decryption, the key may be incorrect or the partition layout may differ from the standard one.
 
-### Encryption
+## Troubleshooting
 
-PS3 Fat NAND models encrypt the entire HDD using AES-CBC-192:
-- 24-byte key derived from the console's EID Root Key
-- Zero IV per 512-byte sector (IV resets at each sector boundary)
-- bswap16 applied before CBC decryption (byte pairs swapped)
-- Write path: plaintext -> AES-CBC-192 encrypt -> bswap16 -> raw sectors
-
-### Filesystem
-
-The PS3 GameOS partition uses a modified FreeBSD UFS2 filesystem:
-- Big-endian byte order (PowerPC Cell processor)
-- 16384-byte blocks, 4096-byte fragments
-- 256-byte inodes with standard UFS2 dinode2 layout
-- Directory entries are variable-length records with 4-byte alignment
-
-### Key discovery: inode field requirements
-
-Through byte-level comparison of PS3-created vs externally-created inodes, the following fields were found to be critical for the PS3's filesystem checker to accept external writes:
-- `di_mode`: 0x41FF for directories, 0x81B6 for files
-- `di_gen` (offset 0x50): must be non-zero (random generation number)
-- `di_blksize` (offset 0x0C): fs_bsize for directories, 0 for files
-- `di_blocks` (offset 0x18): counts allocated blocks, not file size
-- Timestamp offsets: 0x20 (atime), 0x28 (mtime), 0x30 (ctime), 0x38 (birthtime)
-- `cg_old_time` in CG headers: must be updated on every CG modification
-
----
-
-## Credits
-
-Created by **Mena / Phenom Mod**
-
----
+| Issue | Solution |
+|-------|---------|
+| "UFS2 superblock not found" | Verify your EID Root Key is correct. Try different partition offsets. |
+| "Invalid EID Root Key" | Ensure the key is exactly 64 hex characters (32 bytes). |
+| Physical drive not accessible | Run the application with administrator/root privileges. |
+| Slow browsing | Large directories decrypt sectors on demand — first access is slower. |
 
 ## License
 
-This project is provided for educational and personal use. Use at your own risk. Always back up your data before writing to a PS3 HDD.
-
----
-
-## Disclaimer
-
-This tool requires a console-specific EID Root Key which can only be obtained from your own PS3. It does not bypass any copy protection or enable piracy. It is intended for managing legitimately owned content on your own hardware.
+This tool is for personal use with your own PS3 console and hard drive.
