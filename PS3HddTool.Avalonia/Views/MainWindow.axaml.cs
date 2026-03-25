@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using PS3HddTool.Avalonia.ViewModels;
@@ -17,6 +18,11 @@ public partial class MainWindow : Window
         DataContext = _vm;
 
         Closing += (_, _) => _vm.Cleanup();
+
+        // Enable drag-drop for EID key .bin files
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DropEvent, OnDrop);
+        AddHandler(DragDrop.DragOverEvent, OnDragOver);
 
         var tree = this.FindControl<TreeView>("FileTreeView");
         if (tree != null)
@@ -47,6 +53,68 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnDragOver(object? sender, DragEventArgs e)
+    {
+        e.DragEffects = DragDropEffects.Copy;
+    }
+
+    private void OnDrop(object? sender, DragEventArgs e)
+    {
+        var fileNames = e.Data.GetFiles();
+        if (fileNames == null) return;
+        
+        foreach (var item in fileNames)
+        {
+            string? path = item.TryGetLocalPath();
+            if (path == null) continue;
+            
+            string ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
+            
+            if (ext == ".bin" || ext == ".eid")
+            {
+                try
+                {
+                    byte[] data = System.IO.File.ReadAllBytes(path);
+                    
+                    // EID key is 48 bytes raw, or 96 hex chars in a text file
+                    string hexKey;
+                    if (data.Length == 48)
+                    {
+                        // Raw binary — 48 bytes
+                        hexKey = BitConverter.ToString(data).Replace("-", "");
+                    }
+                    else if (data.Length >= 96 && data.Length <= 200)
+                    {
+                        // Possibly hex-encoded text
+                        string text = System.Text.Encoding.ASCII.GetString(data).Trim();
+                        text = text.Replace("-", "").Replace(" ", "").Replace("\r", "").Replace("\n", "");
+                        if (text.Length == 96 && System.Text.RegularExpressions.Regex.IsMatch(text, "^[0-9a-fA-F]+$"))
+                            hexKey = text;
+                        else
+                        {
+                            _vm.StatusText = $"File '{System.IO.Path.GetFileName(path)}' is not a valid EID key (wrong format).";
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        _vm.StatusText = $"File '{System.IO.Path.GetFileName(path)}' is not a valid EID key ({data.Length} bytes, expected 48).";
+                        return;
+                    }
+                    
+                    _vm.EidRootKeyHex = hexKey;
+                    _vm.StatusText = $"EID key loaded from {System.IO.Path.GetFileName(path)}";
+                    _vm.Log($"EID key loaded via drag-drop: {System.IO.Path.GetFileName(path)}");
+                }
+                catch (Exception ex)
+                {
+                    _vm.StatusText = $"Error reading key file: {ex.Message}";
+                }
+                return;
+            }
+        }
+    }
+
     private async void OnOpenImage(object? sender, RoutedEventArgs e)
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -70,12 +138,11 @@ public partial class MainWindow : Window
 
     private async void OnOpenPhysicalDrive(object? sender, RoutedEventArgs e)
     {
-        // Show a dialog to select a physical drive
         var dialog = new Window
         {
             Title = "Select Physical Drive",
-            Width = 500,
-            Height = 350,
+            Width = 600,
+            Height = 260,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false
         };
@@ -84,36 +151,79 @@ public partial class MainWindow : Window
 
         panel.Children.Add(new TextBlock
         {
-            Text = "Enter the device path for your PS3 HDD:",
+            Text = "Select a physical drive:",
             FontWeight = global::Avalonia.Media.FontWeight.SemiBold,
-            Margin = new global::Avalonia.Thickness(0, 0, 0, 8)
+            Margin = new global::Avalonia.Thickness(0, 0, 0, 4)
         });
 
+        var driveCombo = new ComboBox
+        {
+            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Stretch,
+            FontFamily = new global::Avalonia.Media.FontFamily("Consolas,Courier New,monospace"),
+            FontSize = 13
+        };
+
+        // Populate drives
+        var drives = new List<PS3HddTool.Core.Disk.PhysicalDriveInfo>();
+        try
+        {
+            drives = PS3HddTool.Core.Disk.DriveEnumerator.EnumerateDrives();
+            foreach (var d in drives)
+                driveCombo.Items.Add(d.DisplayName);
+            if (drives.Count > 0)
+                driveCombo.SelectedIndex = 0;
+        }
+        catch { }
+
+        if (drives.Count == 0)
+        {
+            driveCombo.Items.Add("No drives found (run as Administrator)");
+            driveCombo.SelectedIndex = 0;
+        }
+
+        var driveRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        Grid.SetColumn(driveCombo, 0);
+        driveRow.Children.Add(driveCombo);
+
+        var refreshBtn = new Button { Content = "Rescan", VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Center, Margin = new global::Avalonia.Thickness(8, 0, 0, 0) };
+        Grid.SetColumn(refreshBtn, 1);
+        refreshBtn.Click += (_, _) =>
+        {
+            driveCombo.Items.Clear();
+            drives.Clear();
+            try
+            {
+                drives = PS3HddTool.Core.Disk.DriveEnumerator.EnumerateDrives();
+                foreach (var d in drives)
+                    driveCombo.Items.Add(d.DisplayName);
+                if (drives.Count > 0)
+                    driveCombo.SelectedIndex = 0;
+            }
+            catch { }
+            if (drives.Count == 0)
+            {
+                driveCombo.Items.Add("No drives found (run as Administrator)");
+                driveCombo.SelectedIndex = 0;
+            }
+        };
+        driveRow.Children.Add(refreshBtn);
+        panel.Children.Add(driveRow);
+
+        // Manual path entry as fallback
         panel.Children.Add(new TextBlock
         {
-            Text = "Windows: \\\\.\\PhysicalDrive1  (check Disk Management)\n" +
-                   "Linux: /dev/sdb  (check lsblk)\n" +
-                   "macOS: /dev/disk2  (check diskutil list)",
+            Text = "Or enter path manually:",
             Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#999")),
             FontSize = 12,
-            Margin = new global::Avalonia.Thickness(0, 0, 0, 12)
+            Margin = new global::Avalonia.Thickness(0, 12, 0, 0)
         });
 
         var pathBox = new TextBox
         {
-            Watermark = "Device path...",
+            Watermark = "e.g. \\\\.\\PhysicalDrive2",
             FontFamily = new global::Avalonia.Media.FontFamily("Consolas,Courier New,monospace")
         };
         panel.Children.Add(pathBox);
-
-        panel.Children.Add(new TextBlock
-        {
-            Text = "Disk size (bytes, 0 = auto-detect):",
-            Margin = new global::Avalonia.Thickness(0, 8, 0, 0)
-        });
-
-        var sizeBox = new TextBox { Text = "0", Watermark = "0" };
-        panel.Children.Add(sizeBox);
 
         var buttonPanel = new StackPanel
         {
@@ -134,13 +244,23 @@ public partial class MainWindow : Window
         };
         okBtn.Click += async (_, _) =>
         {
+            string path;
+            long size = 0;
+            
             if (!string.IsNullOrWhiteSpace(pathBox.Text))
             {
-                long size = 0;
-                long.TryParse(sizeBox.Text, out size);
-                dialog.Close();
-                await _vm.OpenPhysicalDriveCommand.ExecuteAsync((pathBox.Text, size));
+                path = pathBox.Text;
             }
+            else if (driveCombo.SelectedIndex >= 0 && driveCombo.SelectedIndex < drives.Count)
+            {
+                var selected = drives[driveCombo.SelectedIndex];
+                path = selected.Path;
+                size = selected.Size;
+            }
+            else return;
+            
+            dialog.Close();
+            await _vm.OpenPhysicalDriveCommand.ExecuteAsync((path, size));
         };
 
         buttonPanel.Children.Add(cancelBtn);
@@ -151,9 +271,232 @@ public partial class MainWindow : Window
         await dialog.ShowDialog(this);
     }
 
+    private readonly PS3HddTool.Core.EidKeyDatabase _keyDb = new();
+
+    private async void OnSaveKey(object? sender, RoutedEventArgs e)
+    {
+        string currentKey = _vm.EidRootKeyHex;
+        if (string.IsNullOrWhiteSpace(currentKey) || currentKey.Replace("-", "").Replace(" ", "").Length != 96)
+        {
+            _vm.StatusText = "Enter a valid 96-character EID Root Key first.";
+            return;
+        }
+
+        var dialog = new Window
+        {
+            Title = "Save EID Key",
+            Width = 400,
+            Height = 180,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false
+        };
+
+        var panel = new StackPanel { Margin = new global::Avalonia.Thickness(16), Spacing = 8 };
+        panel.Children.Add(new TextBlock { Text = "Enter a nickname for this key:" });
+        var nameBox = new TextBox { Watermark = "e.g. My Fat CECHA, Slim 3000, etc." };
+        panel.Children.Add(nameBox);
+
+        var btnRow = new StackPanel
+        {
+            Orientation = global::Avalonia.Layout.Orientation.Horizontal,
+            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right,
+            Spacing = 8, Margin = new global::Avalonia.Thickness(0, 12, 0, 0)
+        };
+        var cancelBtn = new Button { Content = "Cancel" };
+        cancelBtn.Click += (_, _) => dialog.Close();
+        var saveBtn = new Button
+        {
+            Content = "Save",
+            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5B6EF5")),
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+        };
+        saveBtn.Click += (_, _) =>
+        {
+            string nick = nameBox.Text?.Trim() ?? "";
+            if (string.IsNullOrEmpty(nick)) nick = "Unnamed";
+            _keyDb.Add(nick, currentKey, _vm.DetectedEncryptionType);
+            _vm.StatusText = $"Key saved as '{nick}'.";
+            _vm.Log($"EID key saved: {nick}");
+            dialog.Close();
+        };
+        btnRow.Children.Add(cancelBtn);
+        btnRow.Children.Add(saveBtn);
+        panel.Children.Add(btnRow);
+
+        dialog.Content = panel;
+        await dialog.ShowDialog(this);
+    }
+
+    private async void OnSavedKeys(object? sender, RoutedEventArgs e)
+    {
+        var entries = _keyDb.Entries;
+        if (entries.Count == 0)
+        {
+            _vm.StatusText = "No saved keys. Use 'Save Key' to store one.";
+            return;
+        }
+
+        var dialog = new Window
+        {
+            Title = "Saved EID Keys",
+            Width = 550,
+            Height = 400,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false
+        };
+
+        var panel = new StackPanel { Margin = new global::Avalonia.Thickness(16), Spacing = 8 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Select a key to load:",
+            FontWeight = global::Avalonia.Media.FontWeight.SemiBold
+        });
+
+        var listBox = new ListBox { MinHeight = 200, MaxHeight = 280 };
+        foreach (var entry in entries)
+        {
+            string encLabel = string.IsNullOrEmpty(entry.EncryptionType) ? "" : $" [{entry.EncryptionType}]";
+            string display = $"{entry.Nickname}{encLabel}  —  {entry.HexKey[..16]}...  ({entry.DateAdded:yyyy-MM-dd})";
+            listBox.Items.Add(display);
+        }
+        if (entries.Count > 0) listBox.SelectedIndex = 0;
+        panel.Children.Add(listBox);
+
+        var btnRow = new StackPanel
+        {
+            Orientation = global::Avalonia.Layout.Orientation.Horizontal,
+            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right,
+            Spacing = 8, Margin = new global::Avalonia.Thickness(0, 12, 0, 0)
+        };
+
+        var deleteBtn = new Button
+        {
+            Content = "Delete",
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#FF6B6B"))
+        };
+        deleteBtn.Click += (_, _) =>
+        {
+            int idx = listBox.SelectedIndex;
+            if (idx >= 0 && idx < entries.Count)
+            {
+                _keyDb.Remove(entries[idx].HexKey);
+                listBox.Items.RemoveAt(idx);
+                if (listBox.Items.Count > 0) listBox.SelectedIndex = 0;
+            }
+        };
+
+        var cancelBtn = new Button { Content = "Cancel" };
+        cancelBtn.Click += (_, _) => dialog.Close();
+
+        var loadBtn = new Button
+        {
+            Content = "Load Key",
+            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5B6EF5")),
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+        };
+        loadBtn.Click += (_, _) =>
+        {
+            int idx = listBox.SelectedIndex;
+            if (idx >= 0 && idx < entries.Count)
+            {
+                _vm.EidRootKeyHex = entries[idx].HexKey;
+                _vm.EncryptionHint = entries[idx].EncryptionType;
+                _vm.StatusText = $"Loaded key: {entries[idx].Nickname} [{entries[idx].EncryptionType}]";
+                _vm.Log($"Loaded saved EID key: {entries[idx].Nickname} (hint: {entries[idx].EncryptionType})");
+                dialog.Close();
+            }
+        };
+
+        btnRow.Children.Add(deleteBtn);
+        btnRow.Children.Add(cancelBtn);
+        btnRow.Children.Add(loadBtn);
+        panel.Children.Add(btnRow);
+
+        dialog.Content = panel;
+        await dialog.ShowDialog(this);
+    }
+
     private async void OnDecrypt(object? sender, RoutedEventArgs e)
     {
         await _vm.DecryptCommand.ExecuteAsync(null);
+        
+        // After successful decrypt, prompt to save if key isn't already saved
+        if (_vm.IsDecrypted && !string.IsNullOrEmpty(_vm.EidRootKeyHex))
+        {
+            string cleanKey = _vm.EidRootKeyHex.Replace("-", "").Replace(" ", "").Trim();
+            bool alreadySaved = false;
+            foreach (var entry in _keyDb.Entries)
+            {
+                if (entry.HexKey.Replace("-", "").Replace(" ", "")
+                    .Equals(cleanKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    alreadySaved = true;
+                    // Update encryption type if it was unknown
+                    if (string.IsNullOrEmpty(entry.EncryptionType) && !string.IsNullOrEmpty(_vm.DetectedEncryptionType))
+                    {
+                        _keyDb.Add(entry.Nickname, entry.HexKey, _vm.DetectedEncryptionType);
+                        _vm.Log($"Updated saved key '{entry.Nickname}' with encryption type: {_vm.DetectedEncryptionType}");
+                    }
+                    break;
+                }
+            }
+            
+            if (!alreadySaved)
+            {
+                var dialog = new Window
+                {
+                    Title = "Save EID Key?",
+                    Width = 420,
+                    Height = 200,
+                    WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                    CanResize = false
+                };
+                
+                var panel = new StackPanel { Margin = new global::Avalonia.Thickness(16), Spacing = 8 };
+                panel.Children.Add(new TextBlock
+                {
+                    Text = $"Decryption successful ({_vm.DetectedEncryptionType}). Save this key for future use?",
+                    TextWrapping = global::Avalonia.Media.TextWrapping.Wrap
+                });
+                
+                var nameBox = new TextBox { Watermark = "Nickname (e.g. My Fat CECHA, Slim 3000)" };
+                panel.Children.Add(nameBox);
+                
+                var btnRow = new StackPanel
+                {
+                    Orientation = global::Avalonia.Layout.Orientation.Horizontal,
+                    HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right,
+                    Spacing = 8,
+                    Margin = new global::Avalonia.Thickness(0, 12, 0, 0)
+                };
+                
+                var skipBtn = new Button { Content = "Skip" };
+                skipBtn.Click += (_, _) => dialog.Close();
+                
+                var saveBtn = new Button
+                {
+                    Content = "Save",
+                    Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5B6EF5")),
+                    Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+                };
+                saveBtn.Click += (_, _) =>
+                {
+                    string nick = nameBox.Text?.Trim() ?? "";
+                    if (string.IsNullOrEmpty(nick)) nick = _vm.DetectedEncryptionType + " Console";
+                    _keyDb.Add(nick, _vm.EidRootKeyHex, _vm.DetectedEncryptionType);
+                    _vm.StatusText = $"Key saved as '{nick}'.";
+                    _vm.Log($"EID key saved: {nick} [{_vm.DetectedEncryptionType}]");
+                    dialog.Close();
+                };
+                
+                btnRow.Children.Add(skipBtn);
+                btnRow.Children.Add(saveBtn);
+                panel.Children.Add(btnRow);
+                
+                dialog.Content = panel;
+                await dialog.ShowDialog(this);
+            }
+        }
     }
 
     private async void OnExtract(object? sender, RoutedEventArgs e)
@@ -351,5 +694,38 @@ public partial class MainWindow : Window
 
         dialog.Content = panel;
         await dialog.ShowDialog(this);
+    }
+
+    private async void OnExtractPkg(object? sender, RoutedEventArgs e)
+    {
+        var vm = DataContext as MainViewModel;
+        if (vm == null) return;
+
+        // Pick PKG file
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Select PS3 PKG File",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("PS3 PKG") { Patterns = new[] { "*.pkg" } },
+                new FilePickerFileType("All Files") { Patterns = new[] { "*" } }
+            }
+        });
+
+        if (files == null || files.Count == 0) return;
+        string pkgPath = files[0].Path.LocalPath;
+
+        // Pick output directory
+        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        {
+            Title = "Select Output Directory for Extraction",
+            AllowMultiple = false
+        });
+
+        if (folders == null || folders.Count == 0) return;
+        string outputDir = folders[0].Path.LocalPath;
+
+        await vm.ExtractPkgAsync(pkgPath, outputDir);
     }
 }

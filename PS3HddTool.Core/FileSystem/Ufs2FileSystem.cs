@@ -467,10 +467,12 @@ public class Ufs2Inode
         // 0x0C: u32 di_blksize
         // 0x10: i64 di_size
         // 0x18: i64 di_blocks
-        // 0x20: i64 di_atime       (+ 0x28: i32 di_atimensec)
-        // 0x2C: i64 di_mtime       (+ 0x34: i32 di_mtimensec)
-        // 0x38: i64 di_ctime       (+ 0x40: i32 di_ctimensec)
-        // 0x44: i64 di_birthtime   (+ 0x4C: i32 di_birthnsec)
+        // PS3 packs timestamps non-interleaved (verified from native inode hex dumps):
+        // 0x20: i64 di_atime
+        // 0x28: i64 di_mtime
+        // 0x30: i64 di_ctime
+        // 0x38: i64 di_birthtime
+        // 0x40: i32 di_atimensec, 0x44: i32 di_mtimensec, 0x48: i32 di_ctimensec, 0x4C: i32 di_birthnsec
         // 0x50: u32 di_gen
         // 0x54: u32 di_kernflags
         // 0x58: u32 di_flags
@@ -502,10 +504,14 @@ public class Ufs2Inode
         inode.Size = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x10));
         inode.Blocks = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x18));
 
+        // PS3 UFS2 inode timestamp layout (non-interleaved):
+        //   0x20: di_atime (8B), 0x28: di_mtime (8B), 0x30: di_ctime (8B), 0x38: di_birthtime (8B)
+        //   0x40-0x4F: nanosecond fields (4 x 4B)
+        // Verified by comparing PS3-native inode hex dumps.
         inode.AccessTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x20));
-        inode.ModifyTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x2C));
-        inode.ChangeTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x38));
-        inode.CreateTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x44));
+        inode.ModifyTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x28));
+        inode.ChangeTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x30));
+        inode.CreateTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x38));
 
         inode.Flags = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(0x58));
 

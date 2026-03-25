@@ -52,16 +52,26 @@
                     <Separator Width="1" Background="#444" Margin="8,0"/>
                     <Button Content="About" Click="OnAbout" FontSize="12"
                             VerticalAlignment="Center"/>
+                    <Separator Width="1" Background="#444" Margin="8,0"/>
+                    <Button Content="Extract PKG" Click="OnExtractPkg" FontSize="12"
+                            VerticalAlignment="Center" IsEnabled="{Binding !IsBusy}"/>
                 </StackPanel>
 
                 <!-- Row 1: Key entry and decrypt -->
-                <Grid Grid.Row="1" Grid.Column="0" ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
-                    <TextBlock Text="EID Root Key:" VerticalAlignment="Center" Margin="0,0,8,0" Grid.Column="0"/>
-                    <TextBox Grid.Column="1" Text="{Binding EidRootKeyHex}"
+                <Grid Grid.Row="1" Grid.Column="0" ColumnDefinitions="Auto,Auto,*,Auto,Auto" VerticalAlignment="Center">
+                    <Button Grid.Column="0" Content="Keys" Click="OnSavedKeys" FontSize="12"
+                            VerticalAlignment="Center" Margin="0,0,8,0"
+                            ToolTip.Tip="Load a saved EID Root Key"/>
+                    <TextBlock Text="EID Root Key:" VerticalAlignment="Center" Margin="0,0,8,0" Grid.Column="1"/>
+                    <TextBox Grid.Column="2" Text="{Binding EidRootKeyHex}"
                              Watermark="Enter 96-character hex EID Root Key (48 bytes)..."
                              FontFamily="Consolas,Courier New,monospace" FontSize="13"
                              IsEnabled="{Binding IsDiskOpen}" Margin="0,0,8,0"/>
-                    <Button Grid.Column="2" Content="Decrypt" Click="OnDecrypt" Classes="primary"
+                    <Button Grid.Column="3" Content="Save Key" Click="OnSaveKey" FontSize="12"
+                            VerticalAlignment="Center" Margin="0,0,8,0"
+                            IsEnabled="{Binding IsDiskOpen}"
+                            ToolTip.Tip="Save current key with a nickname"/>
+                    <Button Grid.Column="4" Content="Decrypt" Click="OnDecrypt" Classes="primary"
                             IsEnabled="{Binding IsDiskOpen}"/>
                 </Grid>
             </Grid>

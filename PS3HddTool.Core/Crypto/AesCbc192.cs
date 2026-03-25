@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Threading.Tasks;
 
 namespace PS3HddTool.Core.Crypto;
 
@@ -58,8 +59,72 @@ public sealed class AesCbc192 : IDisposable
 
     /// <summary>
     /// Encrypt one or more sectors. Each sector uses CBC with zero IV independently.
+    /// Parallel: sectors are independent, so we split across threads.
+    /// Uses manual CBC via single ECB encryptor per thread.
     /// </summary>
     public byte[] EncryptSectors(byte[] plaintext)
+    {
+        if (plaintext.Length % SectorSize != 0)
+            throw new ArgumentException($"Length must be a multiple of {SectorSize}.");
+
+        byte[] ciphertext = new byte[plaintext.Length];
+        int sectorCount = plaintext.Length / SectorSize;
+        int blocksPerSector = SectorSize / 16;
+
+        if (sectorCount < 64)
+        {
+            EncryptSectorRange(plaintext, ciphertext, 0, sectorCount, blocksPerSector);
+            return ciphertext;
+        }
+
+        int threadCount = Math.Min(Environment.ProcessorCount, sectorCount / 32);
+        if (threadCount < 2) threadCount = 2;
+        int sectorsPerThread = sectorCount / threadCount;
+
+        Parallel.For(0, threadCount, thread =>
+        {
+            int startSector = thread * sectorsPerThread;
+            int endSector = (thread == threadCount - 1) ? sectorCount : startSector + sectorsPerThread;
+            EncryptSectorRange(plaintext, ciphertext, startSector, endSector, blocksPerSector);
+        });
+
+        return ciphertext;
+    }
+
+    private void EncryptSectorRange(byte[] plaintext, byte[] ciphertext, int startSector, int endSector, int blocksPerSector)
+    {
+        using var aes = Aes.Create();
+        aes.Key = _key;
+        aes.Mode = CipherMode.ECB;
+        aes.Padding = PaddingMode.None;
+        using var encryptor = aes.CreateEncryptor();
+
+        byte[] xorBlock = new byte[16];
+
+        for (int s = startSector; s < endSector; s++)
+        {
+            int sectorOffset = s * SectorSize;
+            Array.Clear(xorBlock, 0, 16);
+
+            for (int bl = 0; bl < blocksPerSector; bl++)
+            {
+                int blockOffset = sectorOffset + bl * 16;
+                long p0 = BitConverter.ToInt64(plaintext, blockOffset);
+                long p1 = BitConverter.ToInt64(plaintext, blockOffset + 8);
+                long x0 = BitConverter.ToInt64(xorBlock, 0);
+                long x1 = BitConverter.ToInt64(xorBlock, 8);
+                BitConverter.TryWriteBytes(xorBlock.AsSpan(0), x0 ^ p0);
+                BitConverter.TryWriteBytes(xorBlock.AsSpan(8), x1 ^ p1);
+                encryptor.TransformBlock(xorBlock, 0, 16, xorBlock, 0);
+                Buffer.BlockCopy(xorBlock, 0, ciphertext, blockOffset, 16);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Original per-sector encryption for self-test verification.
+    /// </summary>
+    public byte[] EncryptSectorsOriginal(byte[] plaintext)
     {
         if (plaintext.Length % SectorSize != 0)
             throw new ArgumentException($"Length must be a multiple of {SectorSize}.");
@@ -71,17 +136,14 @@ public sealed class AesCbc192 : IDisposable
         for (int i = 0; i < sectorCount; i++)
         {
             int offset = i * SectorSize;
-
             using var aes = Aes.Create();
             aes.Key = _key;
             aes.IV = zeroIv;
             aes.Mode = CipherMode.CBC;
             aes.Padding = PaddingMode.None;
-
             using var encryptor = aes.CreateEncryptor();
             byte[] sectorData = new byte[SectorSize];
             Array.Copy(plaintext, offset, sectorData, 0, SectorSize);
-
             byte[] encrypted = encryptor.TransformFinalBlock(sectorData, 0, SectorSize);
             Array.Copy(encrypted, 0, ciphertext, offset, SectorSize);
         }

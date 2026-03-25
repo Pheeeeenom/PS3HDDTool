@@ -51,9 +51,30 @@ public sealed class DecryptedDiskSource : IDiskSource
         return result;
     }
 
-    public bool CanWrite => false; // XTS write not implemented yet
-    public void WriteSectors(long startSector, byte[] data) => throw new NotSupportedException("XTS write not implemented.");
-    public void WriteBytes(long offset, byte[] data) => throw new NotSupportedException("XTS write not implemented.");
+    public bool CanWrite => _source.CanWrite;
+    
+    public void WriteSectors(long startSector, byte[] plaintext)
+    {
+        if (plaintext.Length % SectorSize != 0)
+            throw new ArgumentException("Data must be sector-aligned.");
+
+        // Encrypt: plaintext → XTS encrypt → bswap16 (reverse of read path)
+        byte[] encrypted = _cipher.EncryptSectors(plaintext, startSector);
+
+        if (_applyBswap16)
+            Bswap16.SwapInPlace(encrypted);
+
+        _source.WriteSectors(startSector, encrypted);
+    }
+
+    public void WriteBytes(long offset, byte[] data)
+    {
+        if (offset % SectorSize != 0 || data.Length % SectorSize != 0)
+            throw new ArgumentException("Encrypted writes must be sector-aligned.");
+
+        long startSector = offset / SectorSize;
+        WriteSectors(startSector, data);
+    }
 
     public void Dispose()
     {

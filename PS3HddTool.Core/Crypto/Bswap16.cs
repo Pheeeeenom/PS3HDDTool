@@ -18,7 +18,14 @@ public static class Bswap16
     /// </summary>
     public static void SwapInPlace(byte[] data)
     {
-        for (int i = 0; i < data.Length - 1; i += 2)
+        var span = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(data.AsSpan());
+        for (int k = 0; k < span.Length; k++)
+        {
+            ulong v = span[k];
+            span[k] = ((v & 0x00FF00FF00FF00FFUL) << 8) | ((v >> 8) & 0x00FF00FF00FF00FFUL);
+        }
+        int i = span.Length * 8;
+        for (; i < data.Length - 1; i += 2)
         {
             (data[i], data[i + 1]) = (data[i + 1], data[i]);
         }

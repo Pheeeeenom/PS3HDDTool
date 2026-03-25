@@ -124,7 +124,7 @@ public sealed class PhysicalDiskSource : IDiskSource
     {
         _writable = writable;
         var access = writable ? FileAccess.ReadWrite : FileAccess.Read;
-        _stream = new FileStream(devicePath, FileMode.Open, access, FileShare.ReadWrite,
+        _stream = new FileStream(devicePath, FileMode.Open, access, FileShare.None,
             512, FileOptions.None);
         TotalSize = diskSize > 0 ? diskSize : DetectDiskSize(_stream);
         Description = $"Physical: {devicePath} ({FormatSize(TotalSize)})";
