@@ -972,7 +972,7 @@ public partial class MainViewModel : ObservableObject
                     try
                     {
                         var inode = _fileSystem.ReadInode(entry.InodeNumber);
-                        var node = FileTreeNode.FromInode(inode, entry.Name, "/");
+                        var node = FileTreeNode.FromInode(inode, entry.Name, "/", 2);
                         rootChildren.Add(node);
 
                         // Log inode details for every root child
@@ -1089,128 +1089,93 @@ public partial class MainViewModel : ObservableObject
             if (dirInode.IndirectBlock != 0)
                 Log($"{indent}  di_ib[0]=0x{dirInode.IndirectBlock:X} (single indirect)");
             
-            // Dump raw directory block data
+            // Read directory data using ReadInodeData
             var dirData = fs.ReadInodeData(dirInode);
-            Log($"{indent}  dir data ({dirData.Length} bytes, first 512): {BitConverter.ToString(dirData, 0, Math.Min(512, dirData.Length))}");
             
-            // For large directories (multi-block), validate ALL entries across ALL blocks
-            if (dirData.Length > 4096)
+            // Also read raw disk data for block 0 to check for discrepancies
+            long blk0Addr = dirInode.DirectBlocks[0];
+            if (blk0Addr != 0)
             {
-                Log($"{indent}  === FULL DIR SCAN ({dirData.Length} bytes, {dirData.Length / 512} DIRBLKSIZ sections) ===");
-                int scanOffset = 0;
-                int entryCount = 0;
-                int zeroInoCount = 0;
-                int sectionIdx = 0;
-                int[] entriesPerSection = new int[dirData.Length / 512 + 1];
-                while (scanOffset < dirData.Length)
-                {
-                    int sectionEnd = Math.Min(scanOffset + 512, dirData.Length);
-                    int sectionEntries = 0;
-                    int posInSection = scanOffset;
-                    
-                    // Dump raw hex for key sections: 0, 7, 8, 9 (block boundaries)
-                    if (sectionIdx == 0 || sectionIdx == 7 || sectionIdx == 8 || sectionIdx == 9 || sectionIdx == 39 || sectionIdx == 40 || sectionIdx == 130)
-                    {
-                        int hexLen = Math.Min(512, dirData.Length - scanOffset);
-                        Log($"{indent}    RAW sec{sectionIdx} @{scanOffset} ({hexLen}b): {BitConverter.ToString(dirData, scanOffset, Math.Min(128, hexLen))}...");
-                    }
-                    
-                    while (posInSection < sectionEnd)
-                    {
-                        if (posInSection + 8 > dirData.Length) break;
-                        uint ino = BinaryPrimitives.ReadUInt32BigEndian(dirData.AsSpan(posInSection));
-                        ushort recLen = BinaryPrimitives.ReadUInt16BigEndian(dirData.AsSpan(posInSection + 4));
-                        byte dType = dirData[posInSection + 6];
-                        byte nameLen = dirData[posInSection + 7];
-                        
-                        if (recLen == 0) { Log($"{indent}    SECTION {sectionIdx} @{posInSection}: reclen=0 BREAK"); break; }
-                        
-                        string eName = "";
-                        if (nameLen > 0 && posInSection + 8 + nameLen <= dirData.Length)
-                            eName = System.Text.Encoding.ASCII.GetString(dirData, posInSection + 8, nameLen);
-                        
-                        if (ino == 0) zeroInoCount++;
-                        
-                        // Check: does this entry cross a DIRBLKSIZ boundary?
-                        int entryEnd = posInSection + recLen;
-                        if (entryEnd > sectionEnd && entryEnd != sectionEnd)
-                        {
-                            Log($"{indent}    ERROR: entry '{eName}' @{posInSection} reclen={recLen} crosses DIRBLKSIZ boundary (section ends at {sectionEnd})!");
-                        }
-                        
-                        // Log first, last in each section + every 200th + ino=0 entries + anomalies
-                        bool isAnomaly = (recLen < 8) || (recLen > 512) || (nameLen > 255);
-                        bool isZeroIno = (ino == 0);
-                        if (sectionEntries == 0 || entryEnd >= sectionEnd || isAnomaly || isZeroIno || entryCount % 200 == 0)
-                        {
-                            string marker = isZeroIno ? " [INO=0]" : "";
-                            Log($"{indent}    sec{sectionIdx} @{posInSection}: ino=0x{ino:X} reclen={recLen} type={dType} nlen={nameLen} '{eName}'{marker}");
-                        }
-                        
-                        if (isAnomaly)
-                        {
-                            Log($"{indent}    ^^^ ANOMALY at offset {posInSection} in section {sectionIdx}!");
-                            int dumpStart = Math.Max(0, posInSection - 16);
-                            int dumpLen = Math.Min(64, dirData.Length - dumpStart);
-                            Log($"{indent}    hex @{dumpStart}: {BitConverter.ToString(dirData, dumpStart, dumpLen)}");
-                        }
-                        
-                        sectionEntries++;
-                        entryCount++;
-                        posInSection += recLen;
-                    }
-                    
-                    entriesPerSection[sectionIdx] = sectionEntries;
-                    sectionIdx++;
-                    scanOffset = sectionEnd;
-                }
-                // Log per-section entry counts
-                var secCounts = new System.Text.StringBuilder();
-                for (int s = 0; s < sectionIdx; s++)
-                    secCounts.Append($"{entriesPerSection[s]},");
-                Log($"{indent}  entries/section: [{secCounts}]");
+                long blk0DiskOff = fs.PartitionOffsetBytes + blk0Addr * sb.FragmentSize;
+                // Read as much as the kernel would: if di_blocks=8, kernel reads 4096; if di_blocks=32, kernel reads 16384
+                long kernelReadSize = Math.Min(dirInode.Blocks * 512, sb.BlockSize);
+                byte[] rawDisk = fs.DiskSource.ReadBytes(blk0DiskOff, (int)kernelReadSize);
+                Log($"{indent}  RAW DISK block 0 ({rawDisk.Length} bytes, first 128): {BitConverter.ToString(rawDisk, 0, Math.Min(128, rawDisk.Length))}");
                 
-                // For debugging: log ALL entry names to detect duplicates
+                // If kernel would read more than di_size, check what's beyond di_size
+                if (rawDisk.Length > dirInode.Size && dirInode.Size < rawDisk.Length)
                 {
-                    var allNames = new System.Collections.Generic.List<string>();
-                    int dScanOff = 0;
-                    while (dScanOff < dirData.Length)
-                    {
-                        int dSecEnd = Math.Min(dScanOff + 512, dirData.Length);
-                        int dPos = dScanOff;
-                        while (dPos < dSecEnd)
-                        {
-                            if (dPos + 8 > dirData.Length) break;
-                            uint dino = BinaryPrimitives.ReadUInt32BigEndian(dirData.AsSpan(dPos));
-                            ushort drec = BinaryPrimitives.ReadUInt16BigEndian(dirData.AsSpan(dPos + 4));
-                            if (drec == 0) break;
-                            byte dnlen = dirData[dPos + 7];
-                            if (dino != 0 && dnlen > 0 && dPos + 8 + dnlen <= dirData.Length)
-                            {
-                                string dname = System.Text.Encoding.ASCII.GetString(dirData, dPos + 8, dnlen);
-                                allNames.Add(dname);
-                            }
-                            dPos += drec;
-                        }
-                        dScanOff = dSecEnd;
-                    }
-                    // Find duplicates
-                    var nameCounts = new System.Collections.Generic.Dictionary<string, int>();
-                    foreach (var n in allNames)
-                    {
-                        if (!nameCounts.ContainsKey(n)) nameCounts[n] = 0;
-                        nameCounts[n]++;
-                    }
-                    var dupes = new System.Collections.Generic.List<string>();
-                    foreach (var kv in nameCounts)
-                        if (kv.Value > 1) dupes.Add($"'{kv.Key}'x{kv.Value}");
-                    Log($"{indent}  unique names: {nameCounts.Count}, duplicates: {dupes.Count}");
-                    if (dupes.Count > 0)
-                        Log($"{indent}  DUPLICATES: {string.Join(", ", dupes.Take(20))}");
+                    int beyondOffset = (int)dirInode.Size;
+                    int beyondLen = Math.Min(64, rawDisk.Length - beyondOffset);
+                    if (beyondLen > 0)
+                        Log($"{indent}  BEYOND di_size @{beyondOffset} ({beyondLen} bytes): {BitConverter.ToString(rawDisk, beyondOffset, beyondLen)}");
                 }
                 
-                Log($"{indent}  === END FULL DIR SCAN: {entryCount} entries ({zeroInoCount} ino=0) in {sectionIdx} sections ===");
+                // Check CG bitmap status for this block's fragments
+                int blk0Cg = (int)(blk0Addr / sb.FragsPerGroup);
+                int blk0LocalFrag = (int)(blk0Addr % sb.FragsPerGroup);
+                long cgOff = fs.PartitionOffsetBytes + (long)blk0Cg * sb.FragsPerGroup * sb.FragmentSize;
+                int cblkno = BinaryPrimitives.ReadInt32BigEndian(fs.RawSuperblockData.AsSpan(0x0C));
+                long cgHdrOff = cgOff + (long)cblkno * sb.FragmentSize;
+                byte[] cgHdr = fs.DiskSource.ReadBytes(cgHdrOff, 256);
+                
+                // Read bitmap bytes for this block's fragments
+                int freeoff = BinaryPrimitives.ReadInt32BigEndian(cgHdr.AsSpan(0x60)); // cg_freeoff
+                long bitmapOff = cgHdrOff + freeoff;
+                int bitmapByteIdx = blk0LocalFrag / 8;
+                byte[] bitmapBytes = fs.DiskSource.ReadBytes(bitmapOff + bitmapByteIdx, 4);
+                
+                // Check each fragment in this block
+                var fragStatus = new System.Text.StringBuilder();
+                for (int f = 0; f < fragsPerBlock; f++)
+                {
+                    int fragIdx = blk0LocalFrag + f;
+                    int bi = fragIdx / 8;
+                    int bit = fragIdx % 8;
+                    byte bitmapByte = fs.DiskSource.ReadBytes(bitmapOff + bi, 1)[0];
+                    bool isFree = (bitmapByte & (1 << bit)) != 0;
+                    fragStatus.Append(isFree ? "F" : "U");
+                }
+                Log($"{indent}  CG{blk0Cg} bitmap for frags {blk0LocalFrag}-{blk0LocalFrag+fragsPerBlock-1}: [{fragStatus}] (U=used, F=free)");
             }
+            
+            // Dump ALL directory entries with full detail
+            Log($"{indent}  === DIR ENTRIES ({dirData.Length} bytes) ===");
+            int offset = 0;
+            int secIdx = 0;
+            int totalEntries = 0;
+            while (offset < dirData.Length)
+            {
+                int secEnd = Math.Min(offset + 512, dirData.Length);
+                int secEntries = 0;
+                int pos = offset;
+                while (pos < secEnd)
+                {
+                    if (pos + 8 > dirData.Length) break;
+                    uint ino = BinaryPrimitives.ReadUInt32BigEndian(dirData.AsSpan(pos));
+                    ushort recLen = BinaryPrimitives.ReadUInt16BigEndian(dirData.AsSpan(pos + 4));
+                    byte dType = dirData[pos + 6];
+                    byte nameLen = dirData[pos + 7];
+                    if (recLen == 0) { Log($"{indent}    sec{secIdx} @{pos}: reclen=0 BREAK"); break; }
+                    
+                    string eName = "";
+                    if (nameLen > 0 && pos + 8 + nameLen <= dirData.Length)
+                        eName = System.Text.Encoding.ASCII.GetString(dirData, pos + 8, nameLen);
+                    
+                    // Log EVERY entry for directories (they're small)
+                    string marker = ino == 0 ? " [DELETED]" : "";
+                    Log($"{indent}    sec{secIdx} @{pos}: ino=0x{ino:X} reclen={recLen} type={dType} nlen={nameLen} '{eName}'{marker}");
+                    
+                    secEntries++;
+                    totalEntries++;
+                    pos += recLen;
+                }
+                secIdx++;
+                offset = secEnd;
+            }
+            Log($"{indent}  === END DIR ENTRIES: {totalEntries} entries in {secIdx} sections ===");
+            
+            // Recurse into children
             var entries = fs.ReadDirectory(dirInode);
             foreach (var entry in entries)
             {
@@ -1224,14 +1189,13 @@ public partial class MainViewModel : ObservableObject
                 
                 if (childInode.FileType == Ufs2FileType.Directory)
                 {
-                    // Recurse into subdirectories
                     DeepDumpDirectory(fs, entry.InodeNumber, childPath, depth + 1);
                 }
                 else
                 {
                     Log($"{indent}  [FILE] {childPath} inode={entry.InodeNumber} mode=0x{childInode.Mode:X4} size={childInode.Size} blksize={childBlksize} blocks={childInode.Blocks}");
                     
-                    // For files with indirect blocks or > 100KB, dump full inode + indirect pointers
+                    // For files with indirect blocks, dump inode + block chain
                     if (childInode.IndirectBlock != 0 || childInode.Size > 100000)
                     {
                         if (childInode.RawBytes != null)
@@ -1240,7 +1204,6 @@ public partial class MainViewModel : ObservableObject
                                 Log($"{indent}    inode 0x{r:X2}: {BitConverter.ToString(childInode.RawBytes, r, Math.Min(32, childInode.RawBytes.Length - r))}");
                         }
                         
-                        // Log direct block pointers with alignment
                         for (int i = 0; i < 12; i++)
                         {
                             long dbAddr = childInode.DirectBlocks[i];
@@ -1249,7 +1212,6 @@ public partial class MainViewModel : ObservableObject
                             Log($"{indent}    di_db[{i}]=0x{dbAddr:X} (blockAligned={blockAligned}, frag%{fragsPerBlock}={dbAddr % fragsPerBlock})");
                         }
                         
-                        // Dump indirect block pointer contents
                         if (childInode.IndirectBlock != 0)
                         {
                             Log($"{indent}    di_ib[0]=0x{childInode.IndirectBlock:X} (single indirect)");
@@ -1290,7 +1252,6 @@ public partial class MainViewModel : ObservableObject
                     }
                     else
                     {
-                        // Small files: just first 32 bytes of raw inode
                         if (childInode.RawBytes != null && childInode.RawBytes.Length >= 32)
                             Log($"{indent}    raw: {BitConverter.ToString(childInode.RawBytes, 0, 32)}");
                     }
@@ -1500,7 +1461,7 @@ public partial class MainViewModel : ObservableObject
                 {
                     if (entry.Name == "." || entry.Name == "..") continue;
                     var childInode = _fileSystem.ReadInode(entry.InodeNumber);
-                    var childNode = FileTreeNode.FromInode(childInode, entry.Name, node.FullPath);
+                    var childNode = FileTreeNode.FromInode(childInode, entry.Name, node.FullPath, node.InodeNumber);
                     
                     // Log inode details for diagnostics
                     uint diBlksize = childInode.RawBytes != null && childInode.RawBytes.Length >= 16 
@@ -1510,7 +1471,7 @@ public partial class MainViewModel : ObservableObject
                         Log($"    raw: {BitConverter.ToString(childInode.RawBytes, 0, 32)}");
                     
                     // Deep recursive dump for game title directories (NPUB*, NPEA*, BLUS*, BLES*, etc.)
-                    if (childNode.IsDirectory && node.Name == "game")
+                    if (VerboseDiagnostics && childNode.IsDirectory && node.Name == "game")
                     {
                         // First child triggers full filesystem diagnostics
                         if (entry.Name == entries.Where(e => e.Name != "." && e.Name != "..").First().Name)
@@ -1535,7 +1496,7 @@ public partial class MainViewModel : ObservableObject
                             {
                                 if (gc.Name == "." || gc.Name == "..") continue;
                                 var gcInode = _fileSystem.ReadInode(gc.InodeNumber);
-                                childNode.Children.Add(FileTreeNode.FromInode(gcInode, gc.Name, childNode.FullPath));
+                                childNode.Children.Add(FileTreeNode.FromInode(gcInode, gc.Name, childNode.FullPath, childNode.InodeNumber));
                                 
                                 // Parse PARAM.SFO for title
                                 if (gc.Name.Equals("PARAM.SFO", StringComparison.OrdinalIgnoreCase) 
@@ -1698,6 +1659,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     [ObservableProperty] private bool _dryRunMode = true;
+    [ObservableProperty] private bool _verboseDiagnostics = false;
 
     [RelayCommand]
     public async Task CreateDirectoryAsync()
@@ -1746,6 +1708,7 @@ public partial class MainViewModel : ObservableObject
                 var writer = new PS3HddTool.Core.FileSystem.Ufs2Writer(
                     writeFs, writeDisk, writeFs.PartitionOffsetBytes,
                     DryRunMode, msg => Log(msg));
+                writer.VerboseLog = VerboseDiagnostics;
 
                 writer.CreateDirectory(parentInodeNumber, name);
 
@@ -1824,6 +1787,7 @@ public partial class MainViewModel : ObservableObject
                 var writer = new PS3HddTool.Core.FileSystem.Ufs2Writer(
                     writeFs, writeDisk, writeFs.PartitionOffsetBytes,
                     DryRunMode, msg => Log(msg));
+                writer.VerboseLog = VerboseDiagnostics;
 
                 using var fs = new FileStream(sourceFilePath, FileMode.Open, FileAccess.Read);
 
@@ -1959,6 +1923,7 @@ public partial class MainViewModel : ObservableObject
                 var writer = new PS3HddTool.Core.FileSystem.Ufs2Writer(
                     writeFs, writeDisk, writeFs.PartitionOffsetBytes,
                     DryRunMode, msg => Log(msg));
+                writer.VerboseLog = VerboseDiagnostics;
 
                 // Track created directory inodes by path
                 var dirInodes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
@@ -2021,20 +1986,28 @@ public partial class MainViewModel : ObservableObject
 
                 if (!DryRunMode)
                 {
+                    var swFinalize = System.Diagnostics.Stopwatch.StartNew();
                     writer.UpdateSuperblock();
+                    Log($"  UpdateSuperblock: {swFinalize.ElapsedMilliseconds}ms");
                     
                     // Verify CG bitmap consistency
+                    var swVerify = System.Diagnostics.Stopwatch.StartNew();
                     writer.VerifyCgBitmaps();
+                    Log($"  VerifyCgBitmaps: {swVerify.ElapsedMilliseconds}ms");
                     
                     // Verify directory entry DIRSIZ constraints (catches null-terminator padding bugs)
                     Log("Verifying directory entry DIRSIZ constraints...");
+                    swVerify.Restart();
                     int dirsizErrors = writer.VerifyDirectoryEntries(rootDirInode, folderName + "/");
+                    Log($"  VerifyDirectoryEntries: {swVerify.ElapsedMilliseconds}ms");
                     if (dirsizErrors == 0)
                         Log("  DIRSIZ verification: ALL OK");
                     else
                         Log($"  DIRSIZ verification: {dirsizErrors} violations found! Data may not boot on PS3.");
                     
-                    Log($"Folder '{folderName}' copied: {filesDone} files, {FormatSize(bytesDone)}");
+                    var totalElapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+                    double avgSpeed = totalElapsed > 0.1 ? (bytesDone / (1024.0 * 1024.0)) / totalElapsed : 0;
+                    Log($"Folder '{folderName}' copied: {filesDone} files, {FormatSize(bytesDone)} in {totalElapsed:F1}s ({avgSpeed:F1} MB/s)");
                     if (writeDisk != _fileSystem.DiskSource)
                         writeDisk.Dispose();
                 }
@@ -2062,6 +2035,175 @@ public partial class MainViewModel : ObservableObject
             Log($"ERROR copying folder: {ex.Message}");
         }
         finally { IsBusy = false; IsProgressIndeterminate = false; ProgressValue = 0; ProgressText = ""; }
+    }
+
+    public async Task DeleteSelectedAsync()
+    {
+        try
+        {
+            if (SelectedNode == null || _fileSystem == null)
+            {
+                StatusText = "No node selected.";
+                return;
+            }
+
+            if (SelectedNode.ParentInodeNumber == 0)
+            {
+                StatusText = "Cannot delete root-level system directories.";
+                return;
+            }
+
+            string name = SelectedNode.Name;
+            long inodeNumber = SelectedNode.InodeNumber;
+            long parentInode = SelectedNode.ParentInodeNumber;
+            bool isDir = SelectedNode.IsDirectory;
+
+            IsBusy = true;
+            StatusText = $"Deleting '{name}'...";
+
+            await Task.Run(() =>
+            {
+                var writeDisk = _fileSystem.DiskSource;
+                if (!writeDisk.CanWrite)
+                {
+                    Log("ERROR: Disk is not writable. Open in write mode first.");
+                    return;
+                }
+
+                Ufs2FileSystem writeFs = _fileSystem;
+                var writer = new PS3HddTool.Core.FileSystem.Ufs2Writer(
+                    writeFs, writeDisk, writeFs.PartitionOffsetBytes,
+                    DryRunMode, msg => Log(msg));
+                writer.VerboseLog = VerboseDiagnostics;
+
+                if (isDir)
+                    writer.DeleteDirectory(parentInode, name, inodeNumber);
+                else
+                    writer.DeleteFile(parentInode, name, inodeNumber);
+
+                if (!DryRunMode)
+                {
+                    writer.UpdateSuperblock();
+                    Log($"'{name}' deleted successfully.");
+                    if (writeDisk != _fileSystem.DiskSource)
+                        writeDisk.Dispose();
+                }
+                else
+                    Log($"[FAKE WRITE TEST] Delete '{name}' — no data written.");
+            });
+
+            // Refresh the tree — remove the deleted node from its parent's children
+            if (!DryRunMode)
+            {
+                // Find and remove from parent's Children collection
+                foreach (var root in FileTree)
+                {
+                    if (RemoveNodeFromTree(root, inodeNumber))
+                        break;
+                }
+            }
+
+            StatusText = DryRunMode ? $"[DRY RUN] Would delete '{name}'" : $"Deleted '{name}'";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Delete Error: {ex.Message}";
+            Log($"ERROR deleting: {ex.Message}\n{ex.StackTrace}");
+        }
+        finally { IsBusy = false; }
+    }
+
+    public async Task RenameSelectedAsync(string newName)
+    {
+        try
+        {
+            if (SelectedNode == null || _fileSystem == null)
+            {
+                StatusText = "No node selected.";
+                return;
+            }
+
+            if (SelectedNode.ParentInodeNumber == 0)
+            {
+                StatusText = "Cannot rename root-level system directories.";
+                return;
+            }
+
+            string oldName = SelectedNode.Name;
+            long inodeNumber = SelectedNode.InodeNumber;
+            long parentInode = SelectedNode.ParentInodeNumber;
+            bool isDir = SelectedNode.IsDirectory;
+
+            IsBusy = true;
+            StatusText = $"Renaming '{oldName}' to '{newName}'...";
+
+            await Task.Run(() =>
+            {
+                var writeDisk = _fileSystem.DiskSource;
+                if (!writeDisk.CanWrite)
+                {
+                    Log("ERROR: Disk is not writable.");
+                    return;
+                }
+
+                Ufs2FileSystem writeFs = _fileSystem;
+                var writer = new PS3HddTool.Core.FileSystem.Ufs2Writer(
+                    writeFs, writeDisk, writeFs.PartitionOffsetBytes,
+                    DryRunMode, msg => Log(msg));
+                writer.VerboseLog = VerboseDiagnostics;
+
+                // Rename = move within same parent with different name
+                // Remove old entry, add new entry with same inode
+                writer.RemoveDirectoryEntry(parentInode, oldName);
+
+                var parentInodeData = writeFs.ReadInode(parentInode);
+                int fragsPerBlock = (int)(writeFs.Superblock!.BlockSize / writeFs.Superblock.FragmentSize);
+                int parentCg = (int)(parentInode / writeFs.Superblock.InodesPerGroup);
+                var cgInfo = writer.ReadCylinderGroup(parentCg);
+                byte entryType = isDir ? (byte)4 : (byte)8;
+                writer.AddEntryToDirectory(parentInode, parentInodeData, inodeNumber, newName, entryType,
+                    parentCg, cgInfo, parentCg, cgInfo, fragsPerBlock, out _, out _);
+
+                if (!DryRunMode)
+                {
+                    writer.UpdateSuperblock();
+                    Log($"Renamed '{oldName}' to '{newName}'.");
+                    if (writeDisk != _fileSystem.DiskSource)
+                        writeDisk.Dispose();
+                }
+                else
+                    Log($"[FAKE WRITE TEST] Rename '{oldName}' to '{newName}' — no data written.");
+            });
+
+            if (!DryRunMode)
+            {
+                SelectedNode.Name = newName;
+                SelectedNode.FullPath = SelectedNode.FullPath.Replace($"/{oldName}", $"/{newName}");
+            }
+
+            StatusText = DryRunMode ? $"[DRY RUN] Would rename to '{newName}'" : $"Renamed to '{newName}'";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Rename Error: {ex.Message}";
+            Log($"ERROR renaming: {ex.Message}\n{ex.StackTrace}");
+        }
+        finally { IsBusy = false; }
+    }
+
+    private bool RemoveNodeFromTree(FileTreeNode parent, long targetInode)
+    {
+        for (int i = parent.Children.Count - 1; i >= 0; i--)
+        {
+            if (parent.Children[i].InodeNumber == targetInode)
+            {
+                parent.Children.RemoveAt(i);
+                return true;
+            }
+            if (parent.Children[i].IsDirectory && RemoveNodeFromTree(parent.Children[i], targetInode))
+                return true;
+        }
+        return false;
     }
 
     public void Cleanup()

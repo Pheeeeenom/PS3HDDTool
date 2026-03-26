@@ -607,6 +607,76 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void OnDeleteSelected(object? sender, RoutedEventArgs e)
+    {
+        if (_vm.SelectedNode == null) return;
+
+        string name = _vm.SelectedNode.Name;
+        string type = _vm.SelectedNode.IsDirectory ? "directory" : "file";
+
+        // Confirmation dialog
+        var dialog = new Window
+        {
+            Title = "Confirm Delete",
+            Width = 420, Height = 160,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false
+        };
+
+        bool confirmed = false;
+        var panel = new StackPanel { Margin = new global::Avalonia.Thickness(16), Spacing = 12 };
+        panel.Children.Add(new TextBlock 
+        { 
+            Text = $"Delete {type} '{name}'?\n\nThis cannot be undone.",
+            TextWrapping = global::Avalonia.Media.TextWrapping.Wrap
+        });
+        var btnPanel = new StackPanel { Orientation = global::Avalonia.Layout.Orientation.Horizontal, Spacing = 8, HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right };
+        var deleteBtn = new Button { Content = "Delete" };
+        var cancelBtn = new Button { Content = "Cancel" };
+        deleteBtn.Click += (s, a) => { confirmed = true; dialog.Close(); };
+        cancelBtn.Click += (s, a) => { dialog.Close(); };
+        btnPanel.Children.Add(deleteBtn);
+        btnPanel.Children.Add(cancelBtn);
+        panel.Children.Add(btnPanel);
+        dialog.Content = panel;
+
+        await dialog.ShowDialog(this);
+
+        if (confirmed)
+            await _vm.DeleteSelectedAsync();
+    }
+
+    private async void OnRename(object? sender, RoutedEventArgs e)
+    {
+        if (_vm.SelectedNode == null) return;
+
+        string oldName = _vm.SelectedNode.Name;
+
+        var dialog = new Window
+        {
+            Title = "Rename",
+            Width = 400, Height = 150,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false
+        };
+
+        var textBox = new TextBox { Text = oldName, Margin = new global::Avalonia.Thickness(12) };
+        var okButton = new Button { Content = "Rename", HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right, Margin = new global::Avalonia.Thickness(12) };
+        var panel = new StackPanel { Margin = new global::Avalonia.Thickness(8) };
+        panel.Children.Add(new TextBlock { Text = "New name:", Margin = new global::Avalonia.Thickness(12, 12, 12, 4) });
+        panel.Children.Add(textBox);
+        panel.Children.Add(okButton);
+        dialog.Content = panel;
+
+        string? result = null;
+        okButton.Click += (s, args) => { result = textBox.Text; dialog.Close(); };
+
+        await dialog.ShowDialog(this);
+
+        if (!string.IsNullOrWhiteSpace(result) && result != oldName)
+            await _vm.RenameSelectedAsync(result);
+    }
+
     private async void OnAbout(object? sender, RoutedEventArgs e)
     {
         var dialog = new Window

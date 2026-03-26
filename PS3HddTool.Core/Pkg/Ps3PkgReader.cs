@@ -160,10 +160,8 @@ public class Ps3PkgReader : IDisposable
         // Each entry is 32 bytes:
         // 0-3:   name_offset (u32 BE, relative to data start)
         // 4-7:   name_size (u32 BE)
-        // 8-11:  padding
-        // 12-15: data_offset (u32 BE, relative to data start)
-        // 16-19: padding
-        // 20-23: data_size (u32 BE)
+        // 8-15:  data_offset (u64 BE, relative to data start)
+        // 16-23: data_size (u64 BE)
         // 24:    content_type (0x80/0x00 = PS3, 0x90 = PSP)
         // 25-26: padding
         // 27:    file_type (0x01 = NPDRM, 0x03 = raw, 0x04 = directory)
@@ -185,8 +183,8 @@ public class Ps3PkgReader : IDisposable
 
             uint nameOffset = BinaryPrimitives.ReadUInt32BigEndian(decryptedTable.AsSpan(off));
             uint nameSize = BinaryPrimitives.ReadUInt32BigEndian(decryptedTable.AsSpan(off + 4));
-            uint dataOffset = BinaryPrimitives.ReadUInt32BigEndian(decryptedTable.AsSpan(off + 12));
-            uint dataSize = BinaryPrimitives.ReadUInt32BigEndian(decryptedTable.AsSpan(off + 20));
+            ulong dataOffset = BinaryPrimitives.ReadUInt64BigEndian(decryptedTable.AsSpan(off + 8));
+            ulong dataSize = BinaryPrimitives.ReadUInt64BigEndian(decryptedTable.AsSpan(off + 16));
             byte contentType = decryptedTable[off + 24];
             byte fileType = decryptedTable[off + 27];
 
@@ -197,7 +195,7 @@ public class Ps3PkgReader : IDisposable
             byte[] decName = DecryptData(encName, (long)nameOffset, (int)nameSize);
             string name = Encoding.ASCII.GetString(decName, 0, (int)nameSize).TrimEnd('\0');
 
-            bool isDir = (fileType == 0x04 && dataSize == 0);
+            bool isDir = ((fileType & 0x0F) == 0x04 && dataSize == 0);
 
             Entries.Add(new PkgEntry
             {
@@ -376,11 +374,14 @@ public class Ps3PkgReader : IDisposable
         if (entry.IsDirectory || entry.DataSize == 0)
             return Array.Empty<byte>();
 
+        if (entry.DataSize > int.MaxValue)
+            throw new InvalidOperationException($"File too large for in-memory extraction ({entry.DataSize} bytes). Use ExtractEntryToFile instead.");
+
         byte[] encrypted = new byte[entry.DataSize];
-        _stream.Seek(DataOffset + entry.DataOffset, SeekOrigin.Begin);
+        _stream.Seek((long)(DataOffset + entry.DataOffset), SeekOrigin.Begin);
         _stream.Read(encrypted, 0, (int)entry.DataSize);
 
-        return DecryptData(encrypted, entry.DataOffset, (int)entry.DataSize);
+        return DecryptData(encrypted, (long)entry.DataOffset, (int)entry.DataSize);
     }
 
     /// <summary>
@@ -401,8 +402,8 @@ public class Ps3PkgReader : IDisposable
             Directory.CreateDirectory(dir);
 
         const int CHUNK_SIZE = 1024 * 1024 * 64; // 64MB
-        long remaining = entry.DataSize;
-        long fileOffset = entry.DataOffset;
+        long remaining = (long)entry.DataSize;
+        long fileOffset = (long)entry.DataOffset;
 
         // Timing
         long readTicks = 0, aesTicks = 0, xorTicks = 0, writeTicks = 0, waitTicks = 0;
@@ -532,8 +533,8 @@ public class PkgEntry
     public string Name { get; set; } = "";
     public uint NameOffset { get; set; }
     public uint NameSize { get; set; }
-    public uint DataOffset { get; set; }
-    public uint DataSize { get; set; }
+    public ulong DataOffset { get; set; }
+    public ulong DataSize { get; set; }
     public byte ContentType { get; set; }
     public byte FileType { get; set; }
     public bool IsDirectory { get; set; }

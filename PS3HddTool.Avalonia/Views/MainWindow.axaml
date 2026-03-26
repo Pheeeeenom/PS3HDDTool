@@ -179,11 +179,15 @@
                                 <Button Content="Create Directory" Click="OnCreateDirectory"/>
                                 <Button Content="Copy File to PS3" Click="OnCopyFileToPs3"/>
                                 <Button Content="Copy Folder to PS3" Click="OnCopyFolderToPs3"/>
+                                <Button Content="Delete Selected" Click="OnDeleteSelected"/>
+                                <Button Content="Rename" Click="OnRename"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Spacing="8"
                                         IsVisible="{Binding IsFilesystemMounted}">
                                 <CheckBox Content="Fake Write Test (no actual writes)" 
                                           IsChecked="{Binding DryRunMode}" FontSize="12"/>
+                                <CheckBox Content="Verbose Diagnostics" 
+                                          IsChecked="{Binding VerboseDiagnostics}" FontSize="12"/>
                             </StackPanel>
                         </StackPanel>
                     </Grid>

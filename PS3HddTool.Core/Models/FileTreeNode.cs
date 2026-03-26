@@ -15,6 +15,7 @@ public class FileTreeNode
     public string Label => DisplayName ?? Name;
     public string FullPath { get; set; } = "";
     public long InodeNumber { get; set; }
+    public long ParentInodeNumber { get; set; }
     public bool IsDirectory { get; set; }
     public long Size { get; set; }
     public DateTime Modified { get; set; }
@@ -61,13 +62,14 @@ public class FileTreeNode
     /// <summary>
     /// Build a tree node from a UFS2 directory entry and its inode.
     /// </summary>
-    public static FileTreeNode FromInode(Ufs2Inode inode, string name, string parentPath)
+    public static FileTreeNode FromInode(Ufs2Inode inode, string name, string parentPath, long parentInodeNumber = 0)
     {
         var node = new FileTreeNode
         {
             Name = name,
             FullPath = parentPath == "/" ? $"/{name}" : $"{parentPath}/{name}",
             InodeNumber = inode.InodeNumber,
+            ParentInodeNumber = parentInodeNumber,
             IsDirectory = inode.FileType == Ufs2FileType.Directory,
             Size = inode.Size,
             Modified = inode.ModifyDateTime,

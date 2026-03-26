@@ -5,16 +5,14 @@ namespace PS3HddTool.Core.Crypto;
 
 /// <summary>
 /// AES-CBC-192 implementation for Fat NAND PS3 HDD encryption (CECHA/B/C/E).
-/// 
-/// Unlike Slim/NOR models which use AES-XTS-128 with sector-based tweaks,
-/// Fat NAND models use standard AES-CBC with a 192-bit (24-byte) key and 
-/// a zero IV. Each sector is independently encrypted with CBC — the IV 
-/// resets to zero for each sector.
+/// Each 512-byte sector is independently encrypted with CBC using a zero IV.
 /// </summary>
 public sealed class AesCbc192 : IDisposable
 {
     private readonly byte[] _key;
     public const int SectorSize = 512;
+
+    private readonly byte[] _encryptedZeroSector;
 
     public AesCbc192(byte[] key)
     {
@@ -22,11 +20,16 @@ public sealed class AesCbc192 : IDisposable
             throw new ArgumentException($"Key must be 24 bytes (192-bit). Got {key.Length} bytes.", nameof(key));
 
         _key = (byte[])key.Clone();
+
+        using var aes = Aes.Create();
+        aes.Key = _key;
+        aes.IV = new byte[16];
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.None;
+        using var enc = aes.CreateEncryptor();
+        _encryptedZeroSector = enc.TransformFinalBlock(new byte[SectorSize], 0, SectorSize);
     }
 
-    /// <summary>
-    /// Decrypt one or more sectors. Each sector uses CBC with zero IV independently.
-    /// </summary>
     public byte[] DecryptSectors(byte[] ciphertext)
     {
         if (ciphertext.Length % SectorSize != 0)
@@ -39,29 +42,20 @@ public sealed class AesCbc192 : IDisposable
         for (int i = 0; i < sectorCount; i++)
         {
             int offset = i * SectorSize;
-
             using var aes = Aes.Create();
             aes.Key = _key;
             aes.IV = zeroIv;
             aes.Mode = CipherMode.CBC;
             aes.Padding = PaddingMode.None;
-
             using var decryptor = aes.CreateDecryptor();
             byte[] sectorData = new byte[SectorSize];
             Array.Copy(ciphertext, offset, sectorData, 0, SectorSize);
-
             byte[] decrypted = decryptor.TransformFinalBlock(sectorData, 0, SectorSize);
             Array.Copy(decrypted, 0, plaintext, offset, SectorSize);
         }
-
         return plaintext;
     }
 
-    /// <summary>
-    /// Encrypt one or more sectors. Each sector uses CBC with zero IV independently.
-    /// Parallel: sectors are independent, so we split across threads.
-    /// Uses manual CBC via single ECB encryptor per thread.
-    /// </summary>
     public byte[] EncryptSectors(byte[] plaintext)
     {
         if (plaintext.Length % SectorSize != 0)
@@ -104,8 +98,21 @@ public sealed class AesCbc192 : IDisposable
         for (int s = startSector; s < endSector; s++)
         {
             int sectorOffset = s * SectorSize;
-            Array.Clear(xorBlock, 0, 16);
 
+            // Skip encryption for zero-filled sectors
+            bool isZero = true;
+            for (int z = 0; z < SectorSize; z += 8)
+            {
+                if (BitConverter.ToInt64(plaintext, sectorOffset + z) != 0)
+                { isZero = false; break; }
+            }
+            if (isZero)
+            {
+                Buffer.BlockCopy(_encryptedZeroSector, 0, ciphertext, sectorOffset, SectorSize);
+                continue;
+            }
+
+            Array.Clear(xorBlock, 0, 16);
             for (int bl = 0; bl < blocksPerSector; bl++)
             {
                 int blockOffset = sectorOffset + bl * 16;
@@ -121,9 +128,6 @@ public sealed class AesCbc192 : IDisposable
         }
     }
 
-    /// <summary>
-    /// Original per-sector encryption for self-test verification.
-    /// </summary>
     public byte[] EncryptSectorsOriginal(byte[] plaintext)
     {
         if (plaintext.Length % SectorSize != 0)
@@ -147,7 +151,6 @@ public sealed class AesCbc192 : IDisposable
             byte[] encrypted = encryptor.TransformFinalBlock(sectorData, 0, SectorSize);
             Array.Copy(encrypted, 0, ciphertext, offset, SectorSize);
         }
-
         return ciphertext;
     }
 
