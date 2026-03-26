@@ -681,88 +681,173 @@ public partial class MainWindow : Window
     {
         var dialog = new Window
         {
-            Title = "About PS3 HDD Tool",
-            Width = 460,
-            Height = 430,
+            Title = "About",
+            Width = 440,
+            Height = 420,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false,
-            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#1E1E2E"))
+            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#050508"))
         };
+
+        // Outer container with top chrome strip
+        var outer = new StackPanel { Spacing = 0 };
+
+        // Chrome accent strip
+        var strip = new Border
+        {
+            Height = 3,
+            Margin = new global::Avalonia.Thickness(0, 0, 0, 0)
+        };
+        strip.Background = new global::Avalonia.Media.LinearGradientBrush
+        {
+            StartPoint = new global::Avalonia.RelativePoint(0, 0, global::Avalonia.RelativeUnit.Relative),
+            EndPoint = new global::Avalonia.RelativePoint(1, 0, global::Avalonia.RelativeUnit.Relative),
+            GradientStops =
+            {
+                new global::Avalonia.Media.GradientStop(global::Avalonia.Media.Color.Parse("#001030"), 0),
+                new global::Avalonia.Media.GradientStop(global::Avalonia.Media.Color.Parse("#0060BB"), 0.5),
+                new global::Avalonia.Media.GradientStop(global::Avalonia.Media.Color.Parse("#001030"), 1),
+            }
+        };
+        outer.Children.Add(strip);
 
         var panel = new StackPanel
         {
-            Margin = new global::Avalonia.Thickness(24),
-            Spacing = 12
+            Margin = new global::Avalonia.Thickness(32, 28),
+            Spacing = 6
         };
 
-        panel.Children.Add(new TextBlock
+        // Logo: PS3
+        var logoRow = new StackPanel
         {
-            Text = "PS3 HDD Tool",
-            FontSize = 28,
+            Orientation = global::Avalonia.Layout.Orientation.Horizontal,
+            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
+            Spacing = 4,
+            Margin = new global::Avalonia.Thickness(0, 0, 0, 4)
+        };
+        logoRow.Children.Add(new TextBlock
+        {
+            Text = "PS3",
+            FontSize = 32,
             FontWeight = global::Avalonia.Media.FontWeight.Bold,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5B6EF5")),
-            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#005AAA")),
         });
+        logoRow.Children.Add(new TextBlock
+        {
+            Text = " HDD TOOL",
+            FontSize = 24,
+            FontWeight = global::Avalonia.Media.FontWeight.Light,
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#384858")),
+            VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Bottom,
+            Margin = new global::Avalonia.Thickness(0, 0, 0, 2)
+        });
+        panel.Children.Add(logoRow);
 
-        panel.Children.Add(new TextBlock
+        // Version badge
+        var versionBorder = new Border
+        {
+            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#0C1828")),
+            CornerRadius = new global::Avalonia.CornerRadius(10),
+            Padding = new global::Avalonia.Thickness(14, 3),
+            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
+            Margin = new global::Avalonia.Thickness(0, 0, 0, 12)
+        };
+        versionBorder.Child = new TextBlock
         {
             Text = "v1.0",
-            FontSize = 14,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#999")),
+            FontSize = 11,
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#406080")),
             HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center
+        };
+        panel.Children.Add(versionBorder);
+
+        // Divider
+        panel.Children.Add(new Border
+        {
+            Height = 1,
+            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#14142A")),
+            Margin = new global::Avalonia.Thickness(20, 4)
         });
 
-        panel.Children.Add(new Separator { Height = 1, Margin = new global::Avalonia.Thickness(0, 4) });
-
+        // Description
         panel.Children.Add(new TextBlock
         {
-            Text = "Decrypt, browse, extract, and write files to\nPS3 CECHA Fat NAND encrypted HDDs.",
+            Text = "Decrypt, browse, extract, and write files to\nPS3 Fat NAND encrypted hard drives.",
             TextAlignment = global::Avalonia.Media.TextAlignment.Center,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#CCC")),
-            LineHeight = 22
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#7888A0")),
+            FontSize = 13,
+            LineHeight = 22,
+            Margin = new global::Avalonia.Thickness(0, 4)
         });
 
-        panel.Children.Add(new Separator { Height = 1, Margin = new global::Avalonia.Thickness(0, 4) });
+        // Divider
+        panel.Children.Add(new Border
+        {
+            Height = 1,
+            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#14142A")),
+            Margin = new global::Avalonia.Thickness(20, 4)
+        });
 
+        // Created by label
         panel.Children.Add(new TextBlock
         {
-            Text = "Created by",
-            FontSize = 12,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#888")),
-            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center
+            Text = "CREATED BY",
+            FontSize = 10,
+            FontWeight = global::Avalonia.Media.FontWeight.Bold,
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#304060")),
+            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
+            Margin = new global::Avalonia.Thickness(0, 6, 0, 2)
         });
 
+        // Author name
         panel.Children.Add(new TextBlock
         {
             Text = "Mena / Phenom Mod",
             FontSize = 20,
             FontWeight = global::Avalonia.Media.FontWeight.Bold,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#50FA7B")),
-            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#0080DD")),
+            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
+            Margin = new global::Avalonia.Thickness(0, 0, 0, 6)
         });
 
-        panel.Children.Add(new Separator { Height = 1, Margin = new global::Avalonia.Thickness(0, 4) });
+        // Divider
+        panel.Children.Add(new Border
+        {
+            Height = 1,
+            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#14142A")),
+            Margin = new global::Avalonia.Thickness(20, 4)
+        });
 
+        // Tech stack
         panel.Children.Add(new TextBlock
         {
-            Text = "Cross-platform (.NET/Avalonia)",
+            Text = "Cross-platform  ·  .NET  ·  Avalonia",
             FontSize = 11,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#666")),
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#304060")),
             TextAlignment = global::Avalonia.Media.TextAlignment.Center,
-            LineHeight = 18
+            Margin = new global::Avalonia.Thickness(0, 4)
         });
 
+        // Close button
         var okButton = new Button
         {
             Content = "Close",
             HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
-            Margin = new global::Avalonia.Thickness(0, 8, 0, 0),
-            MinWidth = 100
+            HorizontalContentAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
+            Margin = new global::Avalonia.Thickness(0, 16, 0, 0),
+            MinWidth = 120,
+            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#003D80")),
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#B0C8E8")),
+            BorderBrush = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#005AAA")),
+            BorderThickness = new global::Avalonia.Thickness(1),
+            CornerRadius = new global::Avalonia.CornerRadius(3),
+            Padding = new global::Avalonia.Thickness(0, 8)
         };
         okButton.Click += (s, args) => dialog.Close();
         panel.Children.Add(okButton);
 
-        dialog.Content = panel;
+        outer.Children.Add(panel);
+        dialog.Content = outer;
         await dialog.ShowDialog(this);
     }
 
