@@ -5,7 +5,6 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <PlatformTarget>AnyCPU</PlatformTarget>
     <RootNamespace>PS3HddTool.Avalonia</RootNamespace>
     <AssemblyName>PS3HddTool</AssemblyName>
     <PublishSingleFile>true</PublishSingleFile>

@@ -10,8 +10,19 @@ using PS3HddTool.Core.FileSystem;
 namespace PS3HddTool.Core.Pkg;
 
 /// <summary>
+/// PKG encryption mode.
+/// </summary>
+public enum PkgCryptoMode
+{
+    /// <summary>Retail/finalized: AES-128-CTR with PS3 constant key + FileKey as IV.</summary>
+    AesCtr,
+    /// <summary>Debug/non-finalized: SHA1-based XOR stream cipher seeded from header digest.</summary>
+    Sha1Xor
+}
+
+/// <summary>
 /// Reads and extracts PS3 NPDRM PKG files.
-/// Supports both retail (finalized 0x80) and debug packages.
+/// Supports both retail (finalized, AES-CTR) and debug/homebrew (SHA1-XOR) packages.
 /// </summary>
 public class Ps3PkgReader : IDisposable
 {
@@ -27,16 +38,21 @@ public class Ps3PkgReader : IDisposable
     private Aes? _aes;
     private ICryptoTransform? _aesEncryptor;
     private Action<string>? _log;
-    
-    // Pre-allocated per-thread AES encryptors for parallel decrypt
+
+    // Pre-allocated per-thread AES encryptors for parallel AES-CTR decrypt
     private Aes[]? _threadAes;
     private ICryptoTransform[]? _threadEncryptors;
     private int _threadCount;
 
+    // SHA1-XOR key (64 bytes), built from QaDigest for debug PKGs
+    private byte[]? _sha1BaseKey;
+
     // Header fields
     public byte[] Magic { get; private set; } = new byte[4];
     public byte PkgRevision { get; private set; }
-    public byte PkgType { get; private set; } // 0x01 = PS3, 0x02 = PSP
+    public bool IsFinalized => (PkgRevision & 0x80) != 0;
+    public PkgCryptoMode CryptoMode { get; private set; }
+    public byte PkgType { get; private set; }
     public uint MetadataOffset { get; private set; }
     public uint MetadataCount { get; private set; }
     public uint HeaderSize { get; private set; }
@@ -44,13 +60,14 @@ public class Ps3PkgReader : IDisposable
     public ulong DataSize { get; private set; }
     public string ContentId { get; private set; } = "";
     public byte[] FileKey { get; private set; } = new byte[16];
+    /// <summary>Header bytes at offset 0x60 — used as seed for debug SHA1-XOR decryption.</summary>
+    public byte[] QaDigest { get; private set; } = new byte[16];
     public uint FileCount { get; private set; }
     public ulong TotalSize { get; private set; }
 
-    // Parsed entries
     public List<PkgEntry> Entries { get; private set; } = new();
 
-    // PARAM.SFO data (parsed after reading entries)
+    // PARAM.SFO data
     public string TitleId { get; private set; } = "";
     public string Title { get; private set; } = "";
 
@@ -61,7 +78,7 @@ public class Ps3PkgReader : IDisposable
         _ownsStream = true;
         _log = log;
         ParseHeader();
-        InitAes();
+        InitCrypto();
         ParseFileTable();
         FindTitleId();
     }
@@ -72,30 +89,44 @@ public class Ps3PkgReader : IDisposable
         _reader = new BinaryReader(_stream);
         _ownsStream = false;
         ParseHeader();
-        InitAes();
+        InitCrypto();
         ParseFileTable();
         FindTitleId();
     }
 
-    private void InitAes()
+    private void InitCrypto()
     {
-        _aes = Aes.Create();
-        _aes.Key = PS3_AES_KEY;
-        _aes.Mode = CipherMode.ECB;
-        _aes.Padding = PaddingMode.None;
-        _aesEncryptor = _aes.CreateEncryptor();
-        
-        // Pre-allocate per-thread AES encryptors
-        _threadCount = Environment.ProcessorCount;
-        _threadAes = new Aes[_threadCount];
-        _threadEncryptors = new ICryptoTransform[_threadCount];
-        for (int i = 0; i < _threadCount; i++)
+        if (CryptoMode == PkgCryptoMode.AesCtr)
         {
-            _threadAes[i] = Aes.Create();
-            _threadAes[i].Key = PS3_AES_KEY;
-            _threadAes[i].Mode = CipherMode.ECB;
-            _threadAes[i].Padding = PaddingMode.None;
-            _threadEncryptors[i] = _threadAes[i].CreateEncryptor();
+            _aes = Aes.Create();
+            _aes.Key = PS3_AES_KEY;
+            _aes.Mode = CipherMode.ECB;
+            _aes.Padding = PaddingMode.None;
+            _aesEncryptor = _aes.CreateEncryptor();
+
+            _threadCount = Environment.ProcessorCount;
+            _threadAes = new Aes[_threadCount];
+            _threadEncryptors = new ICryptoTransform[_threadCount];
+            for (int i = 0; i < _threadCount; i++)
+            {
+                _threadAes[i] = Aes.Create();
+                _threadAes[i].Key = PS3_AES_KEY;
+                _threadAes[i].Mode = CipherMode.ECB;
+                _threadAes[i].Padding = PaddingMode.None;
+                _threadEncryptors[i] = _threadAes[i].CreateEncryptor();
+            }
+        }
+        else // Sha1Xor
+        {
+            // Build 64-byte key from digest at 0x60
+            _sha1BaseKey = new byte[0x40];
+            Buffer.BlockCopy(QaDigest, 0, _sha1BaseKey, 0x00, 8);
+            Buffer.BlockCopy(QaDigest, 0, _sha1BaseKey, 0x08, 8);
+            Buffer.BlockCopy(QaDigest, 8, _sha1BaseKey, 0x10, 8);
+            Buffer.BlockCopy(QaDigest, 8, _sha1BaseKey, 0x18, 8);
+            // bytes 0x20-0x3F remain zero
+
+            _threadCount = Environment.ProcessorCount;
         }
     }
 
@@ -104,50 +135,38 @@ public class Ps3PkgReader : IDisposable
         _stream.Seek(0, SeekOrigin.Begin);
         Magic = _reader.ReadBytes(4);
 
-        // Check magic: 0x7F 'P' 'K' 'G'
         if (Magic[0] != 0x7F || Magic[1] != 0x50 || Magic[2] != 0x4B || Magic[3] != 0x47)
             throw new InvalidDataException("Not a valid PS3 PKG file (bad magic).");
 
-        // 0x04: revision/finalized byte
         PkgRevision = _reader.ReadByte();
+        CryptoMode = IsFinalized ? PkgCryptoMode.AesCtr : PkgCryptoMode.Sha1Xor;
+        _log?.Invoke($"PKG revision: 0x{PkgRevision:X2} ({(IsFinalized ? "retail/finalized \u2192 AES-CTR" : "debug/homebrew \u2192 SHA1-XOR")})");
 
-        // 0x05-0x06: skip
-        _reader.ReadBytes(2);
+        _reader.ReadBytes(2); // skip
 
-        // 0x07: pkg type
         PkgType = _reader.ReadByte();
         if (PkgType != 0x01)
             throw new InvalidDataException($"Not a PS3 PKG (type=0x{PkgType:X2}). Only PS3 (0x01) is supported.");
 
-        // 0x08: metadata offset (u32 BE)
         _stream.Seek(0x08, SeekOrigin.Begin);
         MetadataOffset = ReadU32BE();
-
-        // 0x0C: metadata count (u32 BE)
         MetadataCount = ReadU32BE();
-
-        // 0x10: header size (u32 BE)
         HeaderSize = ReadU32BE();
-
-        // 0x14-0x17: item count (u32 BE)
         FileCount = ReadU32BE();
 
-        // 0x18: total pkg size (u64 BE)
         TotalSize = ReadU64BE();
 
-        // 0x20: data offset (u64 BE)
         _stream.Seek(0x20, SeekOrigin.Begin);
         DataOffset = (uint)ReadU64BE();
-
-        // 0x28: data size (u64 BE)
         DataSize = ReadU64BE();
 
-        // 0x30: content ID (36 bytes ASCII)
         _stream.Seek(0x30, SeekOrigin.Begin);
         byte[] contentIdBytes = _reader.ReadBytes(48);
         ContentId = Encoding.ASCII.GetString(contentIdBytes).TrimEnd('\0');
 
-        // 0x70: file key (16 bytes)
+        _stream.Seek(0x60, SeekOrigin.Begin);
+        QaDigest = _reader.ReadBytes(16);
+
         _stream.Seek(0x70, SeekOrigin.Begin);
         FileKey = _reader.ReadBytes(16);
     }
@@ -156,26 +175,31 @@ public class Ps3PkgReader : IDisposable
     {
         Entries.Clear();
 
-        // The file table is at the start of the encrypted data region
-        // Each entry is 32 bytes:
-        // 0-3:   name_offset (u32 BE, relative to data start)
-        // 4-7:   name_size (u32 BE)
-        // 8-15:  data_offset (u64 BE, relative to data start)
-        // 16-23: data_size (u64 BE)
-        // 24:    content_type (0x80/0x00 = PS3, 0x90 = PSP)
-        // 25-26: padding
-        // 27:    file_type (0x01 = NPDRM, 0x03 = raw, 0x04 = directory)
-        // 28-31: padding
-
         int tableSize = (int)(FileCount * 32);
-        byte[] encryptedTable = new byte[tableSize];
+        byte[] rawTable = new byte[tableSize];
 
-        // Read encrypted file table from data region
         _stream.Seek(DataOffset, SeekOrigin.Begin);
-        _stream.Read(encryptedTable, 0, tableSize);
+        _stream.Read(rawTable, 0, tableSize);
 
-        // Decrypt the file table
-        byte[] decryptedTable = DecryptData(encryptedTable, 0, tableSize);
+        byte[] decryptedTable = DecryptData(rawTable, 0, tableSize);
+
+        // Sanity check first entry
+        if (FileCount > 0)
+        {
+            uint checkNameSize = BinaryPrimitives.ReadUInt32BigEndian(decryptedTable.AsSpan(4));
+            if (checkNameSize > 4096 || checkNameSize == 0)
+            {
+                _log?.Invoke($"  File table sanity check failed (nameSize={checkNameSize}). Trying opposite crypto mode...");
+                CryptoMode = CryptoMode == PkgCryptoMode.AesCtr ? PkgCryptoMode.Sha1Xor : PkgCryptoMode.AesCtr;
+                DisposeCrypto();
+                InitCrypto();
+                decryptedTable = DecryptData(rawTable, 0, tableSize);
+                checkNameSize = BinaryPrimitives.ReadUInt32BigEndian(decryptedTable.AsSpan(4));
+                if (checkNameSize > 4096 || checkNameSize == 0)
+                    throw new InvalidDataException($"PKG file table is corrupt or uses an unsupported format (nameSize={checkNameSize} after both crypto modes).");
+                _log?.Invoke($"  Opposite mode succeeded: {CryptoMode} (nameSize={checkNameSize}).");
+            }
+        }
 
         for (int i = 0; i < (int)FileCount; i++)
         {
@@ -188,7 +212,17 @@ public class Ps3PkgReader : IDisposable
             byte contentType = decryptedTable[off + 24];
             byte fileType = decryptedTable[off + 27];
 
-            // Decrypt the file name
+            if (nameSize > 4096 || nameSize == 0)
+            {
+                _log?.Invoke($"  Skipping entry {i}: invalid nameSize={nameSize}");
+                continue;
+            }
+            if (nameOffset + nameSize > (ulong)_stream.Length)
+            {
+                _log?.Invoke($"  Skipping entry {i}: nameOffset 0x{nameOffset:X} + nameSize {nameSize} exceeds file size");
+                continue;
+            }
+
             byte[] encName = new byte[nameSize];
             _stream.Seek(DataOffset + nameOffset, SeekOrigin.Begin);
             _stream.Read(encName, 0, (int)nameSize);
@@ -213,23 +247,17 @@ public class Ps3PkgReader : IDisposable
 
     private void FindTitleId()
     {
-        // Try to get TITLE_ID from Content ID first (format: XX0000-TITLEID00-...)
         if (ContentId.Length >= 16)
         {
-            // Content ID format: XX####-TITLEID_-XXXXXXXXXXXXXXXX
-            // TITLE_ID is typically at position 7, length 9 (e.g. BLUS12345)
             int dash1 = ContentId.IndexOf('-');
             if (dash1 >= 0 && dash1 + 10 < ContentId.Length)
             {
                 int dash2 = ContentId.IndexOf('-', dash1 + 1);
                 if (dash2 > dash1)
-                {
                     TitleId = ContentId.Substring(dash1 + 1, dash2 - dash1 - 1);
-                }
             }
         }
 
-        // Also try to find and parse PARAM.SFO from the entries
         foreach (var entry in Entries)
         {
             if (entry.Name.Equals("PARAM.SFO", StringComparison.OrdinalIgnoreCase))
@@ -240,10 +268,8 @@ public class Ps3PkgReader : IDisposable
                     var sfo = ParamSfo.Parse(sfoData);
                     if (sfo != null)
                     {
-                        if (!string.IsNullOrEmpty(sfo.TitleId))
-                            TitleId = sfo.TitleId;
-                        if (!string.IsNullOrEmpty(sfo.Title))
-                            Title = sfo.Title;
+                        if (!string.IsNullOrEmpty(sfo.TitleId)) TitleId = sfo.TitleId;
+                        if (!string.IsNullOrEmpty(sfo.Title)) Title = sfo.Title;
                     }
                 }
                 catch { }
@@ -252,15 +278,45 @@ public class Ps3PkgReader : IDisposable
         }
     }
 
-    /// <summary>
-    /// Decrypt PKG data using AES-ECB counter mode XOR (single-threaded, for small data).
-    /// </summary>
+    // ========================================================================
+    // Decryption dispatch
+    // ========================================================================
+
     private byte[] DecryptData(byte[] encrypted, long dataRelativeOffset, int size)
     {
-        int alignedSize = size;
-        if (alignedSize % 16 != 0)
-            alignedSize = ((alignedSize / 16) + 1) * 16;
+        return CryptoMode switch
+        {
+            PkgCryptoMode.AesCtr => DecryptAesCtr(encrypted, dataRelativeOffset, size),
+            PkgCryptoMode.Sha1Xor => DecryptSha1Xor(encrypted, dataRelativeOffset, size),
+            _ => encrypted
+        };
+    }
 
+    private byte[] DecryptDataParallelTimed(byte[] encrypted, long dataRelativeOffset, int size,
+        out long counterTicks, out long aesTicks, out long xorTicks)
+    {
+        counterTicks = 0; aesTicks = 0; xorTicks = 0;
+
+        if (CryptoMode == PkgCryptoMode.Sha1Xor)
+        {
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            byte[] result = DecryptSha1XorParallel(encrypted, dataRelativeOffset, size);
+            long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+            aesTicks = t1 - t0;
+            return result;
+        }
+
+        return DecryptAesCtrParallelTimed(encrypted, dataRelativeOffset, size,
+            out counterTicks, out aesTicks, out xorTicks);
+    }
+
+    // ========================================================================
+    // AES-CTR (retail/finalized)
+    // ========================================================================
+
+    private byte[] DecryptAesCtr(byte[] encrypted, long dataRelativeOffset, int size)
+    {
+        int alignedSize = (size + 15) & ~15;
         long startBlock = dataRelativeOffset / 16;
         int blocks = alignedSize / 16;
 
@@ -272,51 +328,13 @@ public class Ps3PkgReader : IDisposable
         byte[] result = new byte[size];
         for (int i = 0; i < size; i++)
             result[i] = (byte)(encrypted[i] ^ keystream[i]);
-
         return result;
     }
 
-    /// <summary>
-    /// Parallel version of DecryptData. Splits work across threads for large buffers.
-    /// Each thread builds its own counter block segment and AES-encrypts independently.
-    /// </summary>
-    /// <summary>
-    /// Fast counter block fill. Precomputes the upper 8 bytes of FileKey+startCounter,
-    /// then just writes upper + incrementing lower for each block. Avoids Array.Copy.
-    /// </summary>
-    private static void FillCounterBlocks(byte[] fileKey, long startBlock, byte[] dest, int destOffset, int blockCount)
-    {
-        // Compute FileKey as two big-endian uint64s
-        ulong keyHi = BinaryPrimitives.ReadUInt64BigEndian(fileKey.AsSpan(0));
-        ulong keyLo = BinaryPrimitives.ReadUInt64BigEndian(fileKey.AsSpan(8));
-
-        // Add startBlock to the 128-bit counter
-        ulong lo = keyLo + (ulong)startBlock;
-        ulong hi = keyHi;
-        if (lo < keyLo) hi++; // carry
-
-        for (int b = 0; b < blockCount; b++)
-        {
-            int off = destOffset + b * 16;
-            BinaryPrimitives.WriteUInt64BigEndian(dest.AsSpan(off), hi);
-            BinaryPrimitives.WriteUInt64BigEndian(dest.AsSpan(off + 8), lo);
-
-            lo++;
-            if (lo == 0) hi++; // carry on overflow
-        }
-    }
-
-    /// <summary>
-    /// Parallel decrypt with per-phase timing output.
-    /// Optimized: fast counter fill, pre-allocated AES encryptors, in-place XOR.
-    /// </summary>
-    private byte[] DecryptDataParallelTimed(byte[] encrypted, long dataRelativeOffset, int size,
+    private byte[] DecryptAesCtrParallelTimed(byte[] encrypted, long dataRelativeOffset, int size,
         out long counterTicks, out long aesTicks, out long xorTicks)
     {
-        int alignedSize = size;
-        if (alignedSize % 16 != 0)
-            alignedSize = ((alignedSize / 16) + 1) * 16;
-
+        int alignedSize = (size + 15) & ~15;
         long startBlock = dataRelativeOffset / 16;
         int totalBlocks = alignedSize / 16;
 
@@ -337,26 +355,21 @@ public class Ps3PkgReader : IDisposable
             int segmentBytes = segmentBlocks * 16;
             int byteOffset = blockStart * 16;
 
-            // Fast counter fill
             byte[] counterSeg = new byte[segmentBytes];
             FillCounterBlocks(FileKey, startBlock + blockStart, counterSeg, 0, segmentBlocks);
 
-            // Use pre-allocated encryptor for this thread
             byte[] keystreamSeg = _threadEncryptors![thread].TransformFinalBlock(counterSeg, 0, counterSeg.Length);
 
-            // XOR in same thread
             int xorEnd = Math.Min(byteOffset + segmentBytes, size);
             for (int i = byteOffset; i < xorEnd; i++)
                 result[i] = (byte)(encrypted[i] ^ keystreamSeg[i - byteOffset]);
         });
 
         long ct1 = System.Diagnostics.Stopwatch.GetTimestamp();
-
         counterTicks = 0;
         aesTicks = ct1 - ct0;
-        xorTicks = 0; // XOR is now inside the parallel block
+        xorTicks = 0;
 
-        // Trim to actual size if needed
         if (result.Length != size)
         {
             byte[] trimmed = new byte[size];
@@ -366,9 +379,129 @@ public class Ps3PkgReader : IDisposable
         return result;
     }
 
+    private static void FillCounterBlocks(byte[] fileKey, long startBlock, byte[] dest, int destOffset, int blockCount)
+    {
+        ulong keyHi = BinaryPrimitives.ReadUInt64BigEndian(fileKey.AsSpan(0));
+        ulong keyLo = BinaryPrimitives.ReadUInt64BigEndian(fileKey.AsSpan(8));
+
+        ulong lo = keyLo + (ulong)startBlock;
+        ulong hi = keyHi;
+        if (lo < keyLo) hi++;
+
+        for (int b = 0; b < blockCount; b++)
+        {
+            int off = destOffset + b * 16;
+            BinaryPrimitives.WriteUInt64BigEndian(dest.AsSpan(off), hi);
+            BinaryPrimitives.WriteUInt64BigEndian(dest.AsSpan(off + 8), lo);
+            lo++;
+            if (lo == 0) hi++;
+        }
+    }
+
+    // ========================================================================
+    // SHA1-XOR (debug/non-finalized)
+    // ========================================================================
+
     /// <summary>
-    /// Extract a single entry to memory.
+    /// Decrypt data using SHA1-based XOR stream cipher (fail0verflow algorithm).
+    /// The stream cipher uses a 64-byte key buffer with a BE u64 counter at offset 0x38.
+    /// SHA1 of the key buffer produces 20 bytes; the first 16 are XORed with data.
+    /// Counter increments every 16 bytes of stream position.
     /// </summary>
+    private byte[] DecryptSha1Xor(byte[] encrypted, long dataRelativeOffset, int size)
+    {
+        byte[] result = new byte[size];
+
+        byte[] key = new byte[0x40];
+        Buffer.BlockCopy(_sha1BaseKey!, 0, key, 0, 0x40);
+
+        long startBlock = dataRelativeOffset / 16;
+        int startOffset = (int)(dataRelativeOffset % 16);
+
+        BinaryPrimitives.WriteUInt64BigEndian(key.AsSpan(0x38), (ulong)startBlock);
+        byte[] sha1Hash = SHA1.HashData(key);
+
+        int posInBlock = startOffset;
+
+        for (int i = 0; i < size; i++)
+        {
+            if (posInBlock >= 16)
+            {
+                posInBlock = 0;
+                ulong counter = BinaryPrimitives.ReadUInt64BigEndian(key.AsSpan(0x38));
+                counter++;
+                BinaryPrimitives.WriteUInt64BigEndian(key.AsSpan(0x38), counter);
+                sha1Hash = SHA1.HashData(key);
+            }
+
+            result[i] = (byte)(encrypted[i] ^ sha1Hash[posInBlock]);
+            posInBlock++;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Parallel SHA1-XOR decrypt for large data.
+    /// </summary>
+    private byte[] DecryptSha1XorParallel(byte[] encrypted, long dataRelativeOffset, int size)
+    {
+        byte[] result = new byte[size];
+
+        long startBlock = dataRelativeOffset / 16;
+        int startOffset = (int)(dataRelativeOffset % 16);
+        long totalBlocks = ((long)size + startOffset + 15) / 16;
+
+        int threadCount = Math.Min(_threadCount, Math.Max(1, (int)(totalBlocks / 256)));
+        if (threadCount < 2 || size < 65536)
+            return DecryptSha1Xor(encrypted, dataRelativeOffset, size);
+
+        long blocksPerThread = totalBlocks / threadCount;
+
+        Parallel.For(0, threadCount, thread =>
+        {
+            long blockStart = thread * blocksPerThread;
+            long blockEnd = (thread == threadCount - 1) ? totalBlocks : blockStart + blocksPerThread;
+
+            long byteStart = blockStart * 16 - startOffset;
+            if (byteStart < 0) byteStart = 0;
+            long byteEnd = blockEnd * 16 - startOffset;
+            if (byteEnd > size) byteEnd = size;
+            if (byteStart >= byteEnd) return;
+
+            byte[] key = new byte[0x40];
+            Buffer.BlockCopy(_sha1BaseKey!, 0, key, 0, 0x40);
+
+            long absStreamPos = dataRelativeOffset + byteStart;
+            long currentBlock = absStreamPos / 16;
+            int posInBlock = (int)(absStreamPos % 16);
+
+            BinaryPrimitives.WriteUInt64BigEndian(key.AsSpan(0x38), (ulong)currentBlock);
+            byte[] sha1Hash = SHA1.HashData(key);
+
+            for (long i = byteStart; i < byteEnd; i++)
+            {
+                if (posInBlock >= 16)
+                {
+                    posInBlock = 0;
+                    ulong counter = BinaryPrimitives.ReadUInt64BigEndian(key.AsSpan(0x38));
+                    counter++;
+                    BinaryPrimitives.WriteUInt64BigEndian(key.AsSpan(0x38), counter);
+                    sha1Hash = SHA1.HashData(key);
+                }
+
+                result[i] = (byte)(encrypted[i] ^ sha1Hash[posInBlock]);
+                posInBlock++;
+            }
+        });
+
+        return result;
+    }
+
+    // ========================================================================
+    // Extraction
+    // ========================================================================
+
     public byte[] ExtractEntryToMemory(PkgEntry entry)
     {
         if (entry.IsDirectory || entry.DataSize == 0)
@@ -384,10 +517,6 @@ public class Ps3PkgReader : IDisposable
         return DecryptData(encrypted, (long)entry.DataOffset, (int)entry.DataSize);
     }
 
-    /// <summary>
-    /// Extract a single entry to a file on disk.
-    /// Double-buffered: writes previous chunk while reading+decrypting current.
-    /// </summary>
     public void ExtractEntryToFile(PkgEntry entry, string outputPath)
     {
         if (entry.IsDirectory)
@@ -396,23 +525,19 @@ public class Ps3PkgReader : IDisposable
             return;
         }
 
-        // Ensure parent directory exists
         string? dir = Path.GetDirectoryName(outputPath);
         if (dir != null && !Directory.Exists(dir))
             Directory.CreateDirectory(dir);
 
-        const int CHUNK_SIZE = 1024 * 1024 * 64; // 64MB
+        const int CHUNK_SIZE = 1024 * 1024 * 64;
         long remaining = (long)entry.DataSize;
         long fileOffset = (long)entry.DataOffset;
 
-        // Timing
-        long readTicks = 0, aesTicks = 0, xorTicks = 0, writeTicks = 0, waitTicks = 0;
+        long readTicks = 0, aesTicks = 0, xorTicks = 0, waitTicks = 0;
 
         using var outStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024);
 
         Task? pendingWrite = null;
-        byte[]? pendingData = null;
-        int pendingSize = 0;
 
         while (remaining > 0)
         {
@@ -431,19 +556,13 @@ public class Ps3PkgReader : IDisposable
 
             long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
 
-            // Wait for previous write to finish before starting new one
             if (pendingWrite != null)
-            {
                 pendingWrite.Wait();
-            }
 
             long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
 
-            // Kick off async write for this chunk
-            pendingData = decrypted;
-            pendingSize = toRead;
-            var capturedData = pendingData;
-            var capturedSize = pendingSize;
+            var capturedData = decrypted;
+            var capturedSize = toRead;
             var capturedStream = outStream;
             pendingWrite = Task.Run(() => capturedStream.Write(capturedData, 0, capturedSize));
 
@@ -456,7 +575,6 @@ public class Ps3PkgReader : IDisposable
             remaining -= toRead;
         }
 
-        // Wait for final write
         long tw0 = System.Diagnostics.Stopwatch.GetTimestamp();
         pendingWrite?.Wait();
         long tw1 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -465,14 +583,10 @@ public class Ps3PkgReader : IDisposable
         double freq = System.Diagnostics.Stopwatch.Frequency;
         if (entry.DataSize > 1024 * 1024)
         {
-            _log?.Invoke($"  PKG TIMING [{entry.Name}]: read={readTicks * 1000 / freq:F0}ms, aes={aesTicks * 1000 / freq:F0}ms, xor={xorTicks * 1000 / freq:F0}ms, write_wait={waitTicks * 1000 / freq:F0}ms, size={entry.DataSize / (1024 * 1024)}MB");
+            _log?.Invoke($"  PKG TIMING [{entry.Name}]: read={readTicks * 1000 / freq:F0}ms, crypto={aesTicks * 1000 / freq:F0}ms, write_wait={waitTicks * 1000 / freq:F0}ms, size={entry.DataSize / (1024 * 1024)}MB, mode={CryptoMode}");
         }
     }
 
-    /// <summary>
-    /// Extract all entries to a directory, organized by TITLE_ID.
-    /// Returns the output directory path.
-    /// </summary>
     public string ExtractAll(string outputDir, Action<string, double>? progress = null)
     {
         string gameDir = Path.Combine(outputDir, string.IsNullOrEmpty(TitleId) ? "UNKNOWN" : TitleId);
@@ -488,17 +602,17 @@ public class Ps3PkgReader : IDisposable
             progress?.Invoke(entry.Name, (double)(i + 1) / total * 100);
 
             if (entry.IsDirectory)
-            {
                 Directory.CreateDirectory(fullPath);
-            }
             else
-            {
                 ExtractEntryToFile(entry, fullPath);
-            }
         }
 
         return gameDir;
     }
+
+    // ========================================================================
+    // Helpers
+    // ========================================================================
 
     private uint ReadU32BE()
     {
@@ -512,14 +626,22 @@ public class Ps3PkgReader : IDisposable
         return BinaryPrimitives.ReadUInt64BigEndian(b);
     }
 
-    public void Dispose()
+    private void DisposeCrypto()
     {
-        _aesEncryptor?.Dispose();
-        _aes?.Dispose();
+        _aesEncryptor?.Dispose(); _aesEncryptor = null;
+        _aes?.Dispose(); _aes = null;
         if (_threadEncryptors != null)
             foreach (var enc in _threadEncryptors) enc?.Dispose();
+        _threadEncryptors = null;
         if (_threadAes != null)
             foreach (var aes in _threadAes) aes?.Dispose();
+        _threadAes = null;
+        _sha1BaseKey = null;
+    }
+
+    public void Dispose()
+    {
+        DisposeCrypto();
         if (_ownsStream)
         {
             _reader.Dispose();

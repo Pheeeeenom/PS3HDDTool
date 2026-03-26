@@ -167,6 +167,18 @@ public partial class MainViewModel : ObservableObject
 
             await Task.Run(() =>
             {
+                // Check for 4K native drives — incompatible with PS3
+                var (logical, physical) = PhysicalDiskSource.DetectSectorSizes(drive.Path);
+                if (logical > 0)
+                    Log($"Drive sector sizes: logical={logical}, physical={physical} ({(logical == 512 && physical == 512 ? "512n" : logical == 512 ? "512e" : "4Kn")})");
+
+                if (logical >= 4096)
+                    throw new InvalidOperationException(
+                        $"This drive uses 4K native sectors (logical={logical}, physical={physical}). " +
+                        "The PS3 requires 512-byte logical sectors (512n or 512e). " +
+                        "4K native drives will cause filesystem corruption on the PS3. " +
+                        "Use a drive with 512-byte logical sector support.");
+
                 _diskSource?.Dispose();
                 _decryptedSource?.Dispose();
 
@@ -2232,6 +2244,7 @@ public partial class MainViewModel : ObservableObject
                 Log($"PKG Content ID: {pkg.ContentId}");
                 Log($"PKG Title ID: {pkg.TitleId}");
                 Log($"PKG Title: {pkg.Title}");
+                Log($"PKG Type: {pkg.CryptoMode} (revision=0x{pkg.PkgRevision:X2})");
                 Log($"PKG Files: {pkg.Entries.Count}");
                 Log($"PKG Data Offset: 0x{pkg.DataOffset:X}");
                 Log($"PKG Data Size: {pkg.DataSize:N0} bytes");

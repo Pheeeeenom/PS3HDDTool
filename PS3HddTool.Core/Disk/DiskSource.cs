@@ -267,6 +267,84 @@ public sealed class PhysicalDiskSource : IDiskSource
 
     public void Dispose() => _stream.Dispose();
 
+    /// <summary>
+    /// Detect logical and physical sector sizes for a drive.
+    /// 4K native: logical=4096, physical=4096 — INCOMPATIBLE with PS3.
+    /// 512e:      logical=512,  physical=4096 — OK.
+    /// 512n:      logical=512,  physical=512  — OK.
+    /// Returns (0, 0) if detection fails.
+    /// </summary>
+    public static (int LogicalSectorSize, int PhysicalSectorSize) DetectSectorSizes(string devicePath)
+    {
+        if (OperatingSystem.IsWindows())
+            return DetectSectorSizesWindows(devicePath);
+        if (OperatingSystem.IsLinux())
+            return DetectSectorSizesLinux(devicePath);
+        return (0, 0);
+    }
+
+    /// <summary>
+    /// Returns true if the drive is 4K native (no 512-byte emulation).
+    /// </summary>
+    public static bool Is4KNative(string devicePath)
+    {
+        var (logical, _) = DetectSectorSizes(devicePath);
+        return logical >= 4096;
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static (int, int) DetectSectorSizesWindows(string devicePath)
+    {
+        try
+        {
+            const uint IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400;
+            var handle = CreateFileW(devicePath, 0, 0x03, IntPtr.Zero, 3, 0, IntPtr.Zero);
+            if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+                return (0, 0);
+            try
+            {
+                byte[] query = new byte[12];
+                BitConverter.TryWriteBytes(query.AsSpan(0), 6);
+                BitConverter.TryWriteBytes(query.AsSpan(4), 0);
+                byte[] output = new byte[64];
+                bool ok = DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY,
+                    query, query.Length, output, output.Length, out int bytesReturned, IntPtr.Zero);
+                if (!ok || bytesReturned < 28) return (0, 0);
+                return (BitConverter.ToInt32(output, 16), BitConverter.ToInt32(output, 20));
+            }
+            finally { CloseHandle(handle); }
+        }
+        catch { return (0, 0); }
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    private static (int, int) DetectSectorSizesLinux(string devicePath)
+    {
+        try
+        {
+            string devName = Path.GetFileName(devicePath);
+            string logPath = $"/sys/block/{devName}/queue/logical_block_size";
+            string physPath = $"/sys/block/{devName}/queue/physical_block_size";
+            int logical = 0, physical = 0;
+            if (File.Exists(logPath)) int.TryParse(File.ReadAllText(logPath).Trim(), out logical);
+            if (File.Exists(physPath)) int.TryParse(File.ReadAllText(physPath).Trim(), out physical);
+            return (logical, physical);
+        }
+        catch { return (0, 0); }
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+        IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DeviceIoControl(IntPtr hDevice, uint dwIoControlCode,
+        byte[] lpInBuffer, int nInBufferSize, byte[] lpOutBuffer, int nOutBufferSize,
+        out int lpBytesReturned, IntPtr lpOverlapped);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr hObject);
+
     private static string FormatSize(long bytes)
     {
         string[] units = { "B", "KB", "MB", "GB", "TB" };
