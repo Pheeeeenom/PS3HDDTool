@@ -216,19 +216,23 @@
                 </Grid>
 
                 <!-- Row 1: Key entry -->
-                <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,*,Auto,Auto" VerticalAlignment="Center">
+                <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto,Auto" VerticalAlignment="Center">
                     <Button Grid.Column="0" Content="Keys" Click="OnSavedKeys"
-                            Margin="0,0,8,0" ToolTip.Tip="Load a saved EID Root Key"/>
-                    <TextBlock Text="EID ROOT KEY" VerticalAlignment="Center" Margin="0,0,10,0" Grid.Column="1"
+                            Margin="0,0,4,0" ToolTip.Tip="Load a saved EID Root Key"/>
+                    <Button Grid.Column="1" Content="Import" Click="OnImportKey"
+                            Margin="0,0,4,0" ToolTip.Tip="Import eid_root_key.bin, hdd_key.bin, or individual ATA key files (select two for data+tweak pair)"/>
+                    <Button Grid.Column="2" Content="Export" Click="OnExportKeys"
+                            Margin="0,0,8,0" ToolTip.Tip="Derive and export key files (ata_data_key.bin, hdd_key.bin, etc.) from EID Root Key"/>
+                    <TextBlock Text="ENCRYPTION KEY" VerticalAlignment="Center" Margin="0,0,10,0" Grid.Column="3"
                                Foreground="#304060" FontSize="10" FontWeight="Bold" LetterSpacing="1.5"/>
-                    <TextBox Grid.Column="2" Text="{Binding EidRootKeyHex}"
-                             Watermark="96-character hex (48 bytes: 32B key + 16B IV)"
+                    <TextBox Grid.Column="4" Text="{Binding EidRootKeyHex}"
+                             Watermark="EID root key (96 hex), or use Import for hdd_key.bin / ata_data_key.bin"
                              FontFamily="Consolas,Courier New,monospace" FontSize="11"
-                             IsEnabled="{Binding IsDiskOpen}" Margin="0,0,8,0"/>
-                    <Button Grid.Column="3" Content="Save" Click="OnSaveKey"
-                            Margin="0,0,6,0" IsEnabled="{Binding IsDiskOpen}"
+                             Margin="0,0,8,0"/>
+                    <Button Grid.Column="5" Content="Save" Click="OnSaveKey"
+                            Margin="0,0,6,0"
                             ToolTip.Tip="Save current key with a nickname"/>
-                    <Button Grid.Column="4" Content="Decrypt" Click="OnDecrypt" Classes="primary"
+                    <Button Grid.Column="6" Content="Decrypt" Click="OnDecrypt" Classes="primary"
                             IsEnabled="{Binding IsDiskOpen}"/>
                 </Grid>
 

@@ -34,15 +34,22 @@ public class EidKeyDatabase
 
     public void Add(string nickname, string hexKey, string encryptionType = "")
     {
-        // Validate hex key
+        // Validate: either 96-char EID root key hex, or prefixed pre-derived key
         string clean = hexKey.Replace("-", "").Replace(" ", "").Trim();
-        if (clean.Length != 96)
-            throw new ArgumentException("EID Root Key must be 96 hex characters (48 bytes).");
+        bool isEidRoot = clean.Length == 96 && !clean.Contains(":");
+        bool isPrefixed = clean.StartsWith("HDDKEY:", StringComparison.OrdinalIgnoreCase)
+                       || clean.StartsWith("CBCKEY:", StringComparison.OrdinalIgnoreCase);
+
+        if (!isEidRoot && !isPrefixed)
+            throw new ArgumentException(
+                $"Key must be 96 hex chars (EID root key) or prefixed HDDKEY:/CBCKEY: format. Got: {clean.Length} chars.");
+
+        string compareKey = clean.ToUpperInvariant();
 
         // Check for duplicate key
         foreach (var e in _entries)
         {
-            if (e.HexKey.Replace("-", "").Replace(" ", "").Equals(clean, StringComparison.OrdinalIgnoreCase))
+            if (e.HexKey.Replace("-", "").Replace(" ", "").Equals(compareKey, StringComparison.OrdinalIgnoreCase))
             {
                 // Update nickname and encryption type if key already exists
                 e.Nickname = nickname;
@@ -115,6 +122,24 @@ public class EidKeyEntry
     public string EncryptionType { get; set; } = ""; // "CBC-192" or "XTS-128" or "" (unknown)
     public DateTime DateAdded { get; set; } = DateTime.UtcNow;
 
-    public override string ToString() => 
-        string.IsNullOrEmpty(Nickname) ? HexKey[..16] + "..." : $"{Nickname} ({HexKey[..8]}...)";
+    public override string ToString()
+    {
+        string displayKey = HexKey;
+        string typeTag = "";
+        if (displayKey.StartsWith("HDDKEY:", StringComparison.OrdinalIgnoreCase))
+        {
+            displayKey = displayKey.Substring(7);
+            typeTag = " [XTS]";
+        }
+        else if (displayKey.StartsWith("CBCKEY:", StringComparison.OrdinalIgnoreCase))
+        {
+            displayKey = displayKey.Substring(7);
+            typeTag = " [CBC]";
+        }
+
+        string shortKey = displayKey.Length >= 8 ? displayKey[..8] + "..." : displayKey;
+        return string.IsNullOrEmpty(Nickname)
+            ? shortKey + typeTag
+            : $"{Nickname}{typeTag} ({shortKey})";
+    }
 }

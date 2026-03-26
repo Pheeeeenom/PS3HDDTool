@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -276,9 +278,27 @@ public partial class MainWindow : Window
     private async void OnSaveKey(object? sender, RoutedEventArgs e)
     {
         string currentKey = _vm.EidRootKeyHex;
-        if (string.IsNullOrWhiteSpace(currentKey) || currentKey.Replace("-", "").Replace(" ", "").Length != 96)
+        if (string.IsNullOrWhiteSpace(currentKey))
         {
-            _vm.StatusText = "Enter a valid 96-character EID Root Key first.";
+            _vm.StatusText = "Enter or import a key first.";
+            return;
+        }
+
+        if (currentKey.StartsWith("PARTIAL:", StringComparison.OrdinalIgnoreCase))
+        {
+            _vm.StatusText = "Cannot save incomplete key. Import both data + tweak files first.";
+            return;
+        }
+
+        // Validate: either a 96-char EID root key, or a prefixed pre-derived key
+        string cleanKey = currentKey.Replace("-", "").Replace(" ", "").Trim();
+        bool isEidRoot = cleanKey.Length == 96 && !cleanKey.Contains(":");
+        bool isPrefixed = currentKey.StartsWith("HDDKEY:", StringComparison.OrdinalIgnoreCase)
+                       || currentKey.StartsWith("CBCKEY:", StringComparison.OrdinalIgnoreCase);
+
+        if (!isEidRoot && !isPrefixed)
+        {
+            _vm.StatusText = "Enter a valid key: 96-char EID Root Key hex, or import a key file.";
             return;
         }
 
@@ -356,7 +376,14 @@ public partial class MainWindow : Window
         foreach (var entry in entries)
         {
             string encLabel = string.IsNullOrEmpty(entry.EncryptionType) ? "" : $" [{entry.EncryptionType}]";
-            string display = $"{entry.Nickname}{encLabel}  —  {entry.HexKey[..16]}...  ({entry.DateAdded:yyyy-MM-dd})";
+            string displayHex = entry.HexKey;
+            string keyType = "";
+            if (displayHex.StartsWith("HDDKEY:", StringComparison.OrdinalIgnoreCase))
+                { displayHex = displayHex.Substring(7); keyType = " [XTS direct]"; }
+            else if (displayHex.StartsWith("CBCKEY:", StringComparison.OrdinalIgnoreCase))
+                { displayHex = displayHex.Substring(7); keyType = " [CBC direct]"; }
+            string shortHex = displayHex.Length >= 16 ? displayHex[..16] + "..." : displayHex;
+            string display = $"{entry.Nickname}{encLabel}{keyType}  —  {shortHex}  ({entry.DateAdded:yyyy-MM-dd})";
             listBox.Items.Add(display);
         }
         if (entries.Count > 0) listBox.SelectedIndex = 0;
@@ -414,6 +441,362 @@ public partial class MainWindow : Window
 
         dialog.Content = panel;
         await dialog.ShowDialog(this);
+    }
+
+    private async void OnImportKey(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "Import Key File(s) — select one or two files",
+                AllowMultiple = true,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("Key Files") { Patterns = new[] { "*.bin" } },
+                    new FilePickerFileType("All Files") { Patterns = new[] { "*" } }
+                }
+            });
+
+            if (files.Count == 0) return;
+
+            // ─── Two-file import: data key + tweak key pair ───
+            if (files.Count == 2)
+            {
+                var paths = files.Select(f => f.Path.LocalPath).ToArray();
+                var names = paths.Select(p => System.IO.Path.GetFileName(p).ToLowerInvariant()).ToArray();
+                var datas = paths.Select(System.IO.File.ReadAllBytes).ToArray();
+
+                // Both must be 16 bytes (Slim XTS) or both 24 bytes (Fat CBC-192)
+                if (datas[0].Length == datas[1].Length && (datas[0].Length == 16 || datas[0].Length == 24))
+                {
+                    // Figure out which is data and which is tweak
+                    int dataIdx = 0, tweakIdx = 1;
+                    if (names[1].Contains("data") && !names[0].Contains("data"))
+                        { dataIdx = 1; tweakIdx = 0; }
+                    else if (names[0].Contains("tweak") && !names[1].Contains("tweak"))
+                        { dataIdx = 1; tweakIdx = 0; }
+
+                    byte[] dataKey = datas[dataIdx];
+                    byte[] tweakKey = datas[tweakIdx];
+                    int keyLen = dataKey.Length;
+
+                    // Combine into hdd_key
+                    byte[] combined = new byte[keyLen * 2];
+                    Buffer.BlockCopy(dataKey, 0, combined, 0, keyLen);
+                    Buffer.BlockCopy(tweakKey, 0, combined, keyLen, keyLen);
+                    string hex = BitConverter.ToString(combined).Replace("-", "");
+
+                    _vm.Log($"Imported key pair: {names[dataIdx]} (data) + {names[tweakIdx]} (tweak)");
+                    _vm.Log($"  Data key  ({keyLen}B): {BitConverter.ToString(dataKey)}");
+                    _vm.Log($"  Tweak key ({keyLen}B): {BitConverter.ToString(tweakKey)}");
+
+                    if (keyLen == 24)
+                    {
+                        _vm.EidRootKeyHex = "CBCKEY:" + hex;
+                        _vm.StatusText = "Pre-derived HDD key imported (CBC-192, 2×24 bytes). Press Decrypt.";
+                    }
+                    else
+                    {
+                        _vm.EidRootKeyHex = "HDDKEY:" + hex;
+                        _vm.StatusText = "Pre-derived HDD key imported (XTS-128, 2×16 bytes). Press Decrypt.";
+                    }
+                }
+                else
+                {
+                    _vm.StatusText = $"Key pair must be same size (16B or 24B each). Got {datas[0].Length}B + {datas[1].Length}B.";
+                    _vm.Log($"Import failed: mismatched key sizes {datas[0].Length} and {datas[1].Length}");
+                }
+                return;
+            }
+
+            // ─── Single-file import ───
+            var file = files[0];
+            string path = file.Path.LocalPath;
+            string fileName = System.IO.Path.GetFileName(path).ToLowerInvariant();
+            byte[] data = System.IO.File.ReadAllBytes(path);
+
+            if (data.Length == 48 && IsLikelyHddKey(fileName))
+            {
+                // Fat CBC-192 hdd_key.bin (48 bytes: 24B data + 24B tweak)
+                string hex = BitConverter.ToString(data).Replace("-", "");
+                _vm.Log($"Imported Fat HDD key (CBC-192) from: {fileName} ({data.Length} bytes)");
+                _vm.Log($"  Data key  (0-23):  {BitConverter.ToString(data[..24])}");
+                _vm.Log($"  Tweak key (24-47): {BitConverter.ToString(data[24..48])}");
+                _vm.EidRootKeyHex = "CBCKEY:" + hex;
+                _vm.StatusText = "Pre-derived Fat HDD key imported (CBC-192, 48 bytes). Press Decrypt.";
+            }
+            else if (data.Length == 48)
+            {
+                // eid_root_key.bin (48 bytes: 32B key + 16B IV)
+                string hex = BitConverter.ToString(data).Replace("-", "");
+                _vm.EidRootKeyHex = hex;
+                _vm.Log($"Imported EID Root Key from: {fileName} ({data.Length} bytes)");
+                _vm.Log($"  ERK key (0-31):  {BitConverter.ToString(data[..32])}");
+                _vm.Log($"  ERK IV  (32-47): {BitConverter.ToString(data[32..48])}");
+                _vm.StatusText = "EID Root Key imported. Press Decrypt to derive HDD keys.";
+            }
+            else if (data.Length == 32)
+            {
+                // hdd_key.bin / vflash_key.bin for XTS (32 bytes: 16B data + 16B tweak)
+                string hex = BitConverter.ToString(data).Replace("-", "");
+                _vm.Log($"Imported pre-derived key from: {fileName} ({data.Length} bytes)");
+                _vm.Log($"  Data key  (0-15):  {BitConverter.ToString(data[..16])}");
+                _vm.Log($"  Tweak key (16-31): {BitConverter.ToString(data[16..32])}");
+                _vm.EidRootKeyHex = "HDDKEY:" + hex;
+                _vm.StatusText = "Pre-derived HDD key imported (XTS-128, 32 bytes). Press Decrypt.";
+            }
+            else if (data.Length == 16)
+            {
+                // Single 16-byte key component — needs its partner
+                string hex = BitConverter.ToString(data).Replace("-", "");
+                string component = DetectKeyComponent(fileName);
+                _vm.Log($"Imported single key component from: {fileName} ({data.Length} bytes)");
+                _vm.Log($"  Detected as: {component}");
+                _vm.Log($"  Key: {BitConverter.ToString(data)}");
+                _vm.StatusText = $"Single key imported ({component}). Import its partner too — select both files at once.";
+                // Store temporarily; user needs to import the pair together
+                _vm.EidRootKeyHex = $"PARTIAL:{component}:{hex}";
+            }
+            else if (data.Length == 24)
+            {
+                // Single 24-byte CBC key component — needs its partner
+                string hex = BitConverter.ToString(data).Replace("-", "");
+                string component = DetectKeyComponent(fileName);
+                _vm.Log($"Imported single CBC key component from: {fileName} ({data.Length} bytes)");
+                _vm.Log($"  Detected as: {component}");
+                _vm.Log($"  Key: {BitConverter.ToString(data)}");
+                _vm.StatusText = $"Single key imported ({component}, 24B). Import its partner too — select both files at once.";
+                _vm.EidRootKeyHex = $"PARTIAL:{component}:{hex}";
+            }
+            else
+            {
+                _vm.StatusText = $"Unexpected key file size: {data.Length} bytes.";
+                _vm.Log($"Import failed: {fileName} is {data.Length} bytes");
+                _vm.Log($"  Supported sizes: 16B (single key), 24B (single CBC key), 32B (hdd_key XTS), 48B (eid_root_key or hdd_key CBC)");
+            }
+        }
+        catch (Exception ex)
+        {
+            _vm.StatusText = $"Import error: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Detect if a 48-byte file is likely a pre-derived hdd_key (24+24 Fat CBC)
+    /// rather than an eid_root_key, based on filename patterns.
+    /// </summary>
+    private static bool IsLikelyHddKey(string fileNameLower)
+    {
+        return fileNameLower.Contains("hdd_key") || fileNameLower.Contains("hddkey")
+            || fileNameLower.Contains("ata_key") || fileNameLower.Contains("atakey")
+            || fileNameLower.Contains("flash_key") || fileNameLower.Contains("flashkey")
+            || fileNameLower.Contains("vflash_key") || fileNameLower.Contains("vflashkey");
+    }
+
+    /// <summary>
+    /// Try to identify a key component from its filename.
+    /// </summary>
+    private static string DetectKeyComponent(string fileNameLower)
+    {
+        if (fileNameLower.Contains("encdec") || fileNameLower.Contains("vflash") || fileNameLower.Contains("flash"))
+        {
+            if (fileNameLower.Contains("tweak")) return "encdec_tweak";
+            return "encdec_data";
+        }
+        if (fileNameLower.Contains("tweak")) return "ata_tweak";
+        return "ata_data";
+    }
+
+    private async void OnExportKeys(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string currentKey = _vm.EidRootKeyHex;
+            if (string.IsNullOrWhiteSpace(currentKey))
+            {
+                _vm.StatusText = "Enter or import an EID Root Key first.";
+                return;
+            }
+
+            // Only EID root keys can derive individual key files
+            if (currentKey.StartsWith("HDDKEY:", StringComparison.OrdinalIgnoreCase) ||
+                currentKey.StartsWith("CBCKEY:", StringComparison.OrdinalIgnoreCase))
+            {
+                _vm.StatusText = "Export requires an EID Root Key — pre-derived keys cannot be re-derived into components.";
+                return;
+            }
+
+            if (currentKey.StartsWith("PARTIAL:", StringComparison.OrdinalIgnoreCase))
+            {
+                _vm.StatusText = "Cannot export: incomplete key.";
+                return;
+            }
+
+            byte[] eidRootKey;
+            try
+            {
+                eidRootKey = PS3HddTool.Core.Crypto.Ps3KeyDerivation.ParseEidRootKey(currentKey);
+            }
+            catch (Exception ex)
+            {
+                _vm.StatusText = $"Invalid EID Root Key: {ex.Message}";
+                return;
+            }
+
+            // Let user pick model type
+            var dialog = new Window
+            {
+                Title = "Export Derived Keys",
+                Width = 460,
+                Height = 330,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                CanResize = false,
+                Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#0A0A10"))
+            };
+
+            var panel = new StackPanel { Margin = new global::Avalonia.Thickness(20), Spacing = 10 };
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Select your PS3 model to derive the correct keys:",
+                FontWeight = global::Avalonia.Media.FontWeight.SemiBold,
+                Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+            });
+
+            var modelCombo = new ComboBox { MinWidth = 380 };
+            modelCombo.Items.Add("Fat NAND (CECHA/B/C/E) — AES-CBC-192, 24-byte ATA keys");
+            modelCombo.Items.Add("Fat NOR (CECHG/H/J/K/L/M) — AES-XTS-128, 16-byte ATA keys");
+            modelCombo.Items.Add("Slim (CECH-2xxx) — AES-XTS-128, 16-byte ATA keys");
+            modelCombo.Items.Add("All variants (export every key size)");
+            modelCombo.SelectedIndex = 3; // Default to all
+
+            panel.Children.Add(modelCombo);
+
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Files that will be created:\n" +
+                       "  • ata_data_key.bin, ata_tweak_key.bin\n" +
+                       "  • encdec_data_key.bin, encdec_tweak_key.bin\n" +
+                       "  • hdd_key.bin (combined ATA data+tweak)\n" +
+                       "  • vflash_key.bin (combined ENCDEC data+tweak)",
+                FontSize = 12,
+                Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#8899BB")),
+                FontFamily = new global::Avalonia.Media.FontFamily("Consolas,Courier New,monospace")
+            });
+
+            var btnRow = new StackPanel
+            {
+                Orientation = global::Avalonia.Layout.Orientation.Horizontal,
+                HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right,
+                Spacing = 8, Margin = new global::Avalonia.Thickness(0, 12, 0, 0)
+            };
+            var cancelBtn = new Button { Content = "Cancel" };
+            cancelBtn.Click += (_, _) => dialog.Close();
+            var exportBtn = new Button
+            {
+                Content = "Choose Folder & Export",
+                Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5B6EF5")),
+                Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+            };
+
+            int selectedModel = -1;
+            exportBtn.Click += (_, _) =>
+            {
+                selectedModel = modelCombo.SelectedIndex;
+                dialog.Close();
+            };
+
+            btnRow.Children.Add(cancelBtn);
+            btnRow.Children.Add(exportBtn);
+            panel.Children.Add(btnRow);
+            dialog.Content = panel;
+
+            await dialog.ShowDialog(this);
+
+            if (selectedModel < 0) return; // cancelled
+
+            // Pick output folder
+            var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = "Select Output Folder for Key Files",
+                AllowMultiple = false
+            });
+            if (folders == null || folders.Count == 0) return;
+            string outDir = folders[0].Path.LocalPath;
+
+            // Derive keys
+            var xtsKeys = PS3HddTool.Core.Crypto.Ps3KeyDerivation.DeriveKeys(eidRootKey);
+            var cbcKeys = PS3HddTool.Core.Crypto.Ps3KeyDerivation.DeriveKeysFatNand(eidRootKey);
+
+            int filesWritten = 0;
+
+            // Helper to write a key file
+            void WriteKey(string name, byte[] keyData)
+            {
+                string path = System.IO.Path.Combine(outDir, name);
+                System.IO.File.WriteAllBytes(path, keyData);
+                _vm.Log($"  Exported: {name} ({keyData.Length} bytes) — {BitConverter.ToString(keyData)}");
+                filesWritten++;
+            }
+
+            _vm.Log("─── Key Export ───");
+            _vm.Log($"EID Root Key: {BitConverter.ToString(eidRootKey[..8])}...");
+
+            bool doXts = selectedModel == 1 || selectedModel == 2 || selectedModel == 3;
+            bool doCbc = selectedModel == 0 || selectedModel == 3;
+
+            if (doCbc)
+            {
+                _vm.Log("Fat NAND (CBC-192, 24-byte keys):");
+                string prefix = selectedModel == 3 ? "fat_nand_" : "";
+                WriteKey($"{prefix}ata_data_key.bin", cbcKeys.AtaDataKey);
+                WriteKey($"{prefix}ata_tweak_key.bin", cbcKeys.AtaTweakKey);
+                WriteKey($"{prefix}encdec_data_key.bin", cbcKeys.EncdecDataKey);
+                WriteKey($"{prefix}encdec_tweak_key.bin", cbcKeys.EncdecTweakKey);
+
+                // Combined hdd_key.bin (24+24 = 48 bytes)
+                byte[] hddKey = new byte[cbcKeys.AtaDataKey.Length + cbcKeys.AtaTweakKey.Length];
+                Buffer.BlockCopy(cbcKeys.AtaDataKey, 0, hddKey, 0, cbcKeys.AtaDataKey.Length);
+                Buffer.BlockCopy(cbcKeys.AtaTweakKey, 0, hddKey, cbcKeys.AtaDataKey.Length, cbcKeys.AtaTweakKey.Length);
+                WriteKey($"{prefix}hdd_key.bin", hddKey);
+
+                // Combined vflash/flash key
+                byte[] flashKey = new byte[cbcKeys.EncdecDataKey.Length + cbcKeys.EncdecTweakKey.Length];
+                Buffer.BlockCopy(cbcKeys.EncdecDataKey, 0, flashKey, 0, cbcKeys.EncdecDataKey.Length);
+                Buffer.BlockCopy(cbcKeys.EncdecTweakKey, 0, flashKey, cbcKeys.EncdecDataKey.Length, cbcKeys.EncdecTweakKey.Length);
+                WriteKey($"{prefix}flash_key.bin", flashKey);
+            }
+
+            if (doXts)
+            {
+                _vm.Log("NOR/Slim (XTS-128, 16-byte keys):");
+                string prefix = selectedModel == 3 ? "slim_" : "";
+                WriteKey($"{prefix}ata_data_key.bin", xtsKeys.AtaDataKey);
+                WriteKey($"{prefix}ata_tweak_key.bin", xtsKeys.AtaTweakKey);
+                WriteKey($"{prefix}encdec_data_key.bin", xtsKeys.EncdecDataKey);
+                WriteKey($"{prefix}encdec_tweak_key.bin", xtsKeys.EncdecTweakKey);
+
+                // Combined hdd_key.bin (16+16 = 32 bytes)
+                byte[] hddKey = new byte[32];
+                Buffer.BlockCopy(xtsKeys.AtaDataKey, 0, hddKey, 0, 16);
+                Buffer.BlockCopy(xtsKeys.AtaTweakKey, 0, hddKey, 16, 16);
+                WriteKey($"{prefix}hdd_key.bin", hddKey);
+
+                // Combined vflash_key.bin
+                byte[] vflashKey = new byte[32];
+                Buffer.BlockCopy(xtsKeys.EncdecDataKey, 0, vflashKey, 0, 16);
+                Buffer.BlockCopy(xtsKeys.EncdecTweakKey, 0, vflashKey, 16, 16);
+                WriteKey($"{prefix}vflash_key.bin", vflashKey);
+            }
+
+            _vm.Log($"─── {filesWritten} key files exported to: {outDir} ───");
+            _vm.StatusText = $"{filesWritten} key files exported to {outDir}";
+        }
+        catch (Exception ex)
+        {
+            _vm.StatusText = $"Export error: {ex.Message}";
+            _vm.Log($"Export error: {ex}");
+        }
     }
 
     private async void OnDecrypt(object? sender, RoutedEventArgs e)

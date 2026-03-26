@@ -289,43 +289,127 @@ public partial class MainViewModel : ObservableObject
             Log($"Sector count: {_diskSource.SectorCount}");
 
             byte[] eidRootKey;
-            try
+            bool isPreDerivedXts = EidRootKeyHex.StartsWith("HDDKEY:", StringComparison.OrdinalIgnoreCase);
+            bool isPreDerivedCbc = EidRootKeyHex.StartsWith("CBCKEY:", StringComparison.OrdinalIgnoreCase);
+            bool isPartial = EidRootKeyHex.StartsWith("PARTIAL:", StringComparison.OrdinalIgnoreCase);
+
+            List<(string Method, byte[] DataKey, byte[] TweakKey)> allKeys;
+            Ps3DerivedKeys? cbcKeys = null;
+
+            if (isPartial)
             {
-                eidRootKey = Ps3KeyDerivation.ParseEidRootKey(EidRootKeyHex);
-            }
-            catch (Exception ex)
-            {
-                StatusText = $"Invalid EID Root Key: {ex.Message}";
-                Log($"Key parse error: {ex.Message}");
+                StatusText = "Only one key component imported. Select both data + tweak files at once.";
+                Log("Cannot decrypt: only a single key component was imported.");
+                Log("  Re-import by selecting BOTH key files together (multi-select in file dialog).");
                 return;
             }
+            else if (isPreDerivedCbc)
+            {
+                // Pre-derived Fat CBC-192 hdd_key (48 bytes: 24B data + 24B tweak)
+                string hex = EidRootKeyHex.Substring(7).Replace("-", "").Replace(" ", "").Trim();
+                if (hex.Length != 96)
+                {
+                    StatusText = $"Invalid CBC key: expected 96 hex chars (48 bytes), got {hex.Length}";
+                    return;
+                }
+                byte[] hddKey = new byte[48];
+                for (int i = 0; i < 48; i++)
+                    hddKey[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
 
-            Log($"EID Root Key accepted: {Ps3KeyDerivation.DescribeKey(eidRootKey)}");
-            Log($"  ERK key (bytes 0-31):  {BitConverter.ToString(eidRootKey[..32])}");
-            Log($"  ERK IV  (bytes 32-47): {BitConverter.ToString(eidRootKey[32..48])}");
+                byte[] dk24 = hddKey[..24];
+                byte[] tk24 = hddKey[24..48];
+                byte[] dk16 = hddKey[..16];
+                byte[] tk16 = hddKey[24..40];
+
+                Log($"Using pre-derived Fat HDD key (CBC-192):");
+                Log($"  Data key  (24B): {BitConverter.ToString(dk24)}");
+                Log($"  Tweak key (24B): {BitConverter.ToString(tk24)}");
+
+                // Primary: CBC-192 with 24-byte key
+                cbcKeys = new Ps3DerivedKeys { AtaDataKey = dk24, AtaTweakKey = tk24 };
+
+                // Also try as XTS-128 with first 16 bytes of each half
+                allKeys = new List<(string, byte[], byte[])>
+                {
+                    ("Pre-derived XTS-128 from CBC key", dk16, tk16),
+                    ("Pre-derived XTS-128 from CBC key (reversed)", tk16, dk16)
+                };
+
+                eidRootKey = new byte[48]; // dummy
+            }
+            else if (isPreDerivedXts)
+            {
+                // Pre-derived hdd_key.bin imported directly (32 bytes: 16B data + 16B tweak)
+                string hex = EidRootKeyHex.Substring(7).Replace("-", "").Replace(" ", "").Trim();
+                if (hex.Length != 64)
+                {
+                    StatusText = $"Invalid pre-derived key: expected 64 hex chars, got {hex.Length}";
+                    return;
+                }
+                byte[] hddKey = new byte[32];
+                for (int i = 0; i < 32; i++)
+                    hddKey[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+
+                byte[] dk = hddKey[..16];
+                byte[] tk = hddKey[16..32];
+
+                Log($"Using pre-derived HDD key (XTS-128):");
+                Log($"  Data key:  {BitConverter.ToString(dk)}");
+                Log($"  Tweak key: {BitConverter.ToString(tk)}");
+
+                allKeys = new List<(string, byte[], byte[])>
+                {
+                    ("Pre-derived XTS-128 (hdd_key.bin)", dk, tk),
+                    ("Pre-derived XTS-128 reversed", tk, dk)
+                };
+
+                // Also try as CBC-192 by padding to 24 bytes
+                byte[] cbcAttempt = new byte[24];
+                Buffer.BlockCopy(dk, 0, cbcAttempt, 0, 16);
+                Buffer.BlockCopy(tk, 0, cbcAttempt, 16, 8);
+                cbcKeys = new Ps3DerivedKeys { AtaDataKey = cbcAttempt, AtaTweakKey = cbcAttempt };
+
+                eidRootKey = new byte[48]; // dummy, not used
+            }
+            else
+            {
+                // Standard EID Root Key flow
+                try
+                {
+                    eidRootKey = Ps3KeyDerivation.ParseEidRootKey(EidRootKeyHex);
+                }
+                catch (Exception ex)
+                {
+                    StatusText = $"Invalid EID Root Key: {ex.Message}";
+                    Log($"Key parse error: {ex.Message}");
+                    return;
+                }
+
+                Log($"EID Root Key accepted: {Ps3KeyDerivation.DescribeKey(eidRootKey)}");
+                Log($"  ERK key (bytes 0-31):  {BitConverter.ToString(eidRootKey[..32])}");
+                Log($"  ERK IV  (bytes 32-47): {BitConverter.ToString(eidRootKey[32..48])}");
+
+                StatusText = "Deriving all possible key combinations...";
+
+                allKeys = Ps3KeyDerivation.DeriveAllPossibleKeys(eidRootKey);
+
+                foreach (var (method, dk, tk) in allKeys)
+                {
+                    Log($"  Key set [{method}]:");
+                    Log($"    Data key:  {BitConverter.ToString(dk)}");
+                    Log($"    Tweak key: {BitConverter.ToString(tk)}");
+                }
+
+                cbcKeys = Ps3KeyDerivation.DeriveKeysFatNand(eidRootKey);
+                Log($"  CBC-192 ATA data key (24B): {BitConverter.ToString(cbcKeys.AtaDataKey)}");
+            }
 
             // Dump raw sector 0 before any decryption
             byte[] rawSector0 = _diskSource.ReadSectors(0, 1);
             Log($"Raw sector 0 (first 64 bytes): {BitConverter.ToString(rawSector0[..64])}");
 
-            StatusText = "Deriving all possible key combinations...";
-
-            // Get all possible key derivation results
-            var allKeys = Ps3KeyDerivation.DeriveAllPossibleKeys(eidRootKey);
-
-            // Log all derived keys
-            foreach (var (method, dk, tk) in allKeys)
-            {
-                Log($"  Key set [{method}]:");
-                Log($"    Data key:  {BitConverter.ToString(dk)}");
-                Log($"    Tweak key: {BitConverter.ToString(tk)}");
-            }
-
-            // Also derive the 24-byte CBC-192 key for Fat NAND models
-            var cbcKeys = Ps3KeyDerivation.DeriveKeysFatNand(eidRootKey);
-            Log($"  CBC-192 ATA data key (24B): {BitConverter.ToString(cbcKeys.AtaDataKey)}");
-
-            Log($"Will try CBC-192 (NAND) + {allKeys.Count} XTS key method(s) x 2 bswap modes x {CandidatePartitionStarts.Length} partition offsets...");
+            bool hasErkDerivedCbc = !isPreDerivedXts && !isPreDerivedCbc;
+            Log($"Will try {(hasErkDerivedCbc ? "CBC-192 (NAND) + " : isPreDerivedCbc ? "CBC-192 (pre-derived) + " : "")}{allKeys.Count} XTS key method(s) x 2 bswap modes x {CandidatePartitionStarts.Length} partition offsets...");
 
             bool found = false;
             string foundMethod = "";
