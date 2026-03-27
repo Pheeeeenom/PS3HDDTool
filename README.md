@@ -1,6 +1,6 @@
 # PS3 HDD Tool
 
-A cross-platform GUI application for decrypting and browsing PS3 hard drives using your console's EID Root Key.
+A cross-platform GUI application for decrypting and browsing PS3 hard drives using per-console HDD Key.
 
 Built with **.NET 8** and **Avalonia UI** — runs on Windows, macOS, and Linux.
 
