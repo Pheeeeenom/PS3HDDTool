@@ -151,6 +151,7 @@ public class Ufs2FileSystem
 
     /// <summary>
     /// Stream inode data directly to an output stream (for large file extraction).
+    /// Coalesces contiguous block pointers into single large reads for performance.
     /// Reports progress via callback.
     /// </summary>
     public void ExtractInodeToStream(Ufs2Inode inode, Stream output, Action<long>? progress = null)
@@ -160,58 +161,79 @@ public class Ufs2FileSystem
         long fileSize = inode.Size;
         if (fileSize == 0) return;
 
-        long written = 0;
+        long blockSize = Superblock.BlockSize;
+        int fragsPerBlock = (int)(blockSize / Superblock.FragmentSize);
 
-        // Read direct blocks (12 pointers)
-        for (int i = 0; i < 12 && written < fileSize; i++)
+        // Collect ALL block pointers first
+        var blockPointers = new List<long>();
+
+        // Direct blocks
+        for (int i = 0; i < 12; i++)
         {
-            long blockAddr = inode.DirectBlocks[i];
-            if (blockAddr == 0) break;
-
-            byte[] blockData = ReadBlock(blockAddr);
-            int toWrite = (int)Math.Min(blockData.Length, fileSize - written);
-            output.Write(blockData, 0, toWrite);
-            written += toWrite;
-            progress?.Invoke(written);
+            if (inode.DirectBlocks[i] == 0) break;
+            blockPointers.Add(inode.DirectBlocks[i]);
         }
 
-        // Read single indirect blocks
-        if (written < fileSize && inode.IndirectBlock != 0)
-            WriteIndirectBlocks(inode.IndirectBlock, 1, output, fileSize, ref written, progress);
+        // Single indirect
+        if (inode.IndirectBlock != 0)
+            CollectIndirectPointers(inode.IndirectBlock, 1, blockPointers);
 
-        // Read double indirect blocks
-        if (written < fileSize && inode.DoubleIndirectBlock != 0)
-            WriteIndirectBlocks(inode.DoubleIndirectBlock, 2, output, fileSize, ref written, progress);
+        // Double indirect
+        if (inode.DoubleIndirectBlock != 0)
+            CollectIndirectPointers(inode.DoubleIndirectBlock, 2, blockPointers);
 
-        // Read triple indirect blocks
-        if (written < fileSize && inode.TripleIndirectBlock != 0)
-            WriteIndirectBlocks(inode.TripleIndirectBlock, 3, output, fileSize, ref written, progress);
+        // Triple indirect
+        if (inode.TripleIndirectBlock != 0)
+            CollectIndirectPointers(inode.TripleIndirectBlock, 3, blockPointers);
+
+        // Now write data by coalescing contiguous block runs
+        long written = 0;
+        int idx = 0;
+
+        while (idx < blockPointers.Count && written < fileSize)
+        {
+            long runStart = blockPointers[idx];
+            int runBlocks = 1;
+
+            // Coalesce contiguous blocks
+            while (idx + runBlocks < blockPointers.Count &&
+                   blockPointers[idx + runBlocks] == runStart + (long)runBlocks * fragsPerBlock)
+            {
+                runBlocks++;
+            }
+
+            // Read the entire contiguous run in one I/O
+            long offset = _partitionOffsetBytes + (runStart * Superblock.FragmentSize);
+            int runBytes = (int)(runBlocks * blockSize);
+            int toWrite = (int)Math.Min(runBytes, fileSize - written);
+            byte[] runData = _disk.ReadBytes(offset, runBytes);
+
+            output.Write(runData, 0, toWrite);
+            written += toWrite;
+            idx += runBlocks;
+            progress?.Invoke(written);
+        }
     }
 
-    private void WriteIndirectBlocks(long blockAddr, int level, Stream output, long maxSize, ref long written, Action<long>? progress)
+    /// <summary>
+    /// Recursively collect all block pointers from indirect block chains.
+    /// </summary>
+    private void CollectIndirectPointers(long blockAddr, int level, List<long> pointers)
     {
-        if (blockAddr == 0 || written >= maxSize) return;
+        if (blockAddr == 0) return;
 
         byte[] indirectBlock = ReadBlock(blockAddr);
         int pointersPerBlock = (int)(Superblock!.BlockSize / 8);
 
-        for (int i = 0; i < pointersPerBlock && written < maxSize; i++)
+        for (int i = 0; i < pointersPerBlock; i++)
         {
             long pointer = BinaryPrimitives.ReadInt64BigEndian(indirectBlock.AsSpan(i * 8));
             if (pointer == 0) continue;
 
             if (level == 1)
-            {
-                byte[] blockData = ReadBlock(pointer);
-                int toWrite = (int)Math.Min(blockData.Length, maxSize - written);
-                output.Write(blockData, 0, toWrite);
-                written += toWrite;
-                progress?.Invoke(written);
-            }
+                pointers.Add(pointer);
             else
-            {
-                WriteIndirectBlocks(pointer, level - 1, output, maxSize, ref written, progress);
-            }
+                CollectIndirectPointers(pointer, level - 1, pointers);
         }
     }
 
@@ -354,6 +376,15 @@ public class Ufs2Superblock
 
     public bool IsValid => Magic == Ufs2Magic;
 
+    // Free space summary (fs_cstotal at offset 0x3F0)
+    public long FreeBlocks { get; set; }     // cs_nbfree
+    public long FreeInodes { get; set; }     // cs_nifree
+    public long FreeFragments { get; set; }  // cs_nffree
+    public long Directories { get; set; }    // cs_ndir
+
+    /// <summary>Free space in bytes, computed from free blocks + free fragments.</summary>
+    public long FreeSpaceBytes => (FreeBlocks * BlockSize) + (FreeFragments * FragmentSize);
+
     public static Ufs2Superblock Parse(byte[] data)
     {
         var sb = new Ufs2Superblock();
@@ -377,6 +408,15 @@ public class Ufs2Superblock
         sb.TotalDataFragments = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x220)); // fs_dsize
         sb.CylinderGroups = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(0x2C));  // fs_ncg (NOT 0xBC!)
         sb.InodeSize = 256; // UFS2 always uses 256-byte inodes
+
+        // fs_cstotal at 0x3F0: int64 BE fields
+        if (data.Length >= 0x418)
+        {
+            sb.Directories = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x3F0));    // cs_ndir
+            sb.FreeBlocks = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x3F8));     // cs_nbfree
+            sb.FreeInodes = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x400));     // cs_nifree
+            sb.FreeFragments = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x408));  // cs_nffree
+        }
 
         // Volume name at offset 0x480 (fs_volname), 32 bytes max
         if (data.Length >= 0x4A0)

@@ -242,8 +242,11 @@
                     <Button Content="Create Directory" Click="OnCreateDirectory"/>
                     <Button Content="Copy File" Click="OnCopyFileToPs3"/>
                     <Button Content="Copy Folder" Click="OnCopyFolderToPs3"/>
+                    <Button Content="Install PKG" Click="OnInstallPkgToHdd"/>
                     <Border Classes="sep-v"/>
-                    <Button Content="Extract" Click="OnExtract" Classes="primary"
+                    <Button Content="Root" Click="OnGoToRoot"
+                            ToolTip.Tip="Deselect current node — return to root"/>
+                    <Button Content="Extract" Click="OnExtract"
                             IsEnabled="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNotNull}}"/>
                     <Button Content="Rename" Click="OnRename"
                             IsEnabled="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNotNull}}"/>
@@ -264,10 +267,16 @@
             <Border Grid.Column="0" Background="#07070D" Padding="0">
                 <Grid RowDefinitions="Auto,*">
                     <Border Grid.Row="0" Padding="16,12,16,8" BorderThickness="0,0,0,1" BorderBrush="#0E0E1C">
-                        <Grid ColumnDefinitions="*,Auto">
+                        <Grid ColumnDefinitions="Auto,*,Auto">
                             <TextBlock Classes="header" Text="FILESYSTEM" Margin="0"/>
+                            <!-- Free space display -->
+                            <TextBlock Grid.Column="1" Text="{Binding FreeSpaceText}"
+                                       FontSize="10" Foreground="#2A6030"
+                                       VerticalAlignment="Center" HorizontalAlignment="Center"
+                                       IsVisible="{Binding IsFilesystemMounted}"
+                                       FontFamily="Consolas,Courier New,monospace"/>
                             <!-- Partition count badge -->
-                            <Border Grid.Column="1" Background="#0C1828" CornerRadius="8"
+                            <Border Grid.Column="2" Background="#0C1828" CornerRadius="8"
                                     Padding="8,2" IsVisible="{Binding IsDecrypted}"
                                     VerticalAlignment="Center">
                                 <TextBlock Text="{Binding Partitions.Count, StringFormat='{}{0} partitions'}"
@@ -278,7 +287,8 @@
 
                     <TreeView Grid.Row="1" ItemsSource="{Binding FileTree}"
                               SelectedItem="{Binding SelectedNode}"
-                              Name="FileTreeView" Margin="4,4">
+                              Name="FileTreeView" Margin="4,4"
+                              DragDrop.AllowDrop="True">
                         <TreeView.ItemTemplate>
                             <TreeDataTemplate ItemsSource="{Binding Children}">
                                 <Grid ColumnDefinitions="Auto,*,Auto" Margin="2,2">

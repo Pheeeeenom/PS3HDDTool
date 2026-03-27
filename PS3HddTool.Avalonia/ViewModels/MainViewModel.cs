@@ -45,6 +45,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private FileTreeNode? _selectedNode;
     [ObservableProperty] private global::Avalonia.Media.Imaging.Bitmap? _imagePreview;
     [ObservableProperty] private bool _hasImagePreview;
+    [ObservableProperty] private string _freeSpaceText = "";
 
     private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
         { ".png", ".jpg", ".jpeg", ".bmp", ".gif" };
@@ -1120,7 +1121,9 @@ public partial class MainViewModel : ObservableObject
 
                 IsFilesystemMounted = true;
                 var sb2 = _fileSystem.Superblock!;
+                FreeSpaceText = $"Free: {FormatSize(sb2.FreeSpaceBytes)}";
                 Log($"UFS2 mounted: {sb2.CylinderGroups} CGs, block={sb2.BlockSize}, frag={sb2.FragmentSize}, ipg={sb2.InodesPerGroup}");
+                Log($"  Free space: {FormatSize(sb2.FreeSpaceBytes)} ({sb2.FreeBlocks} blocks, {sb2.FreeFragments} frags, {sb2.FreeInodes} inodes)");
 
                 if (DiskInfo != null)
                 {
@@ -1174,7 +1177,9 @@ public partial class MainViewModel : ObservableObject
 
             IsFilesystemMounted = true;
             var sb = _fileSystem!.Superblock!;
+            FreeSpaceText = $"Free: {FormatSize(sb.FreeSpaceBytes)}";
             Log($"UFS2 mounted: {sb.CylinderGroups} CGs, block={sb.BlockSize}, frag={sb.FragmentSize}, ipg={sb.InodesPerGroup}");
+            Log($"  Free space: {FormatSize(sb.FreeSpaceBytes)} ({sb.FreeBlocks} blocks, {sb.FreeFragments} frags, {sb.FreeInodes} inodes)");
 
             if (DiskInfo != null)
             {
@@ -1909,6 +1914,28 @@ public partial class MainViewModel : ObservableObject
         return $"{size:F2} {units[i]}";
     }
 
+    /// <summary>Re-read superblock and update FreeSpaceText.</summary>
+    public void RefreshFreeSpace()
+    {
+        if (_fileSystem?.Superblock == null) return;
+        try
+        {
+            // Re-mount to re-parse superblock with updated cstotal
+            _fileSystem.Mount();
+            var sb = _fileSystem.Superblock!;
+            FreeSpaceText = $"Free: {FormatSize(sb.FreeSpaceBytes)}";
+        }
+        catch { }
+    }
+
+    /// <summary>Deselect current tree node (go to root).</summary>
+    public void DeselectNode()
+    {
+        SelectedNode = null;
+        HasImagePreview = false;
+        ImagePreview = null;
+    }
+
     private static long ReadBE64(byte[] data, int offset)
     {
         return ((long)data[offset] << 56) | ((long)data[offset + 1] << 48) |
@@ -1994,6 +2021,7 @@ public partial class MainViewModel : ObservableObject
                 {
                     _fileSystem?.Mount();
                 });
+                RefreshFreeSpace();
 
                 // Full tree reload
                 await LoadDirectoryTreeAsync();
@@ -2089,7 +2117,7 @@ public partial class MainViewModel : ObservableObject
                 {
                     _fileSystem?.Mount();
                 });
-
+                RefreshFreeSpace();
                 await LoadDirectoryTreeAsync();
             }
         }
@@ -2285,6 +2313,7 @@ public partial class MainViewModel : ObservableObject
                 {
                     _fileSystem?.Mount();
                 });
+                RefreshFreeSpace();
                 await LoadDirectoryTreeAsync();
             }
         }
@@ -2360,6 +2389,7 @@ public partial class MainViewModel : ObservableObject
                     if (RemoveNodeFromTree(root, inodeNumber))
                         break;
                 }
+                RefreshFreeSpace();
             }
 
             StatusText = DryRunMode ? $"[DRY RUN] Would delete '{name}'" : $"Deleted '{name}'";
@@ -2515,5 +2545,178 @@ public partial class MainViewModel : ObservableObject
             Log($"ERROR extracting PKG: {ex.Message}\n{ex.StackTrace}");
         }
         finally { IsBusy = false; IsProgressIndeterminate = false; ProgressValue = 0; ProgressText = ""; }
+    }
+
+    /// <summary>
+    /// Extract a PKG and install it directly to game/{TITLE_ID}/ on the PS3 HDD.
+    /// </summary>
+    public async Task InstallPkgToHddAsync(string pkgPath)
+    {
+        if (_fileSystem == null) return;
+
+        string? tempDir = null;
+        try
+        {
+            IsBusy = true;
+            IsProgressIndeterminate = false;
+            ProgressValue = 0;
+            StatusText = "Parsing PKG header...";
+            Log($"Installing PKG to HDD: {pkgPath}");
+
+            string titleId = "";
+            string extractedDir = "";
+
+            // Step 1: Extract PKG to temp directory
+            await Task.Run(() =>
+            {
+                tempDir = Path.Combine(Path.GetTempPath(), "PS3HddTool_pkg_" + Guid.NewGuid().ToString("N")[..8]);
+                Directory.CreateDirectory(tempDir);
+
+                using var pkg = new PS3HddTool.Core.Pkg.Ps3PkgReader(pkgPath, msg => Log(msg));
+
+                titleId = pkg.TitleId;
+                Log($"PKG Title ID: {titleId}");
+                Log($"PKG Title: {pkg.Title}");
+                Log($"PKG Type: {pkg.CryptoMode} (revision=0x{pkg.PkgRevision:X2})");
+                Log($"PKG Files: {pkg.Entries.Count}");
+
+                StatusText = $"Extracting PKG ({pkg.Entries.Count} files)...";
+
+                extractedDir = pkg.ExtractAll(tempDir, (name, pct) =>
+                {
+                    ProgressValue = pct * 0.4; // 0-40% for extraction
+                    ProgressText = $"Extracting: {pct:F0}%  {name}";
+                });
+            });
+
+            if (string.IsNullOrEmpty(titleId) || string.IsNullOrEmpty(extractedDir))
+            {
+                StatusText = "PKG extraction failed — no Title ID found.";
+                return;
+            }
+
+            // Step 2: Find or create game/ directory
+            StatusText = $"Installing {titleId} to game/...";
+            Log($"Installing {titleId} to game/{titleId}/");
+
+            await Task.Run(() =>
+            {
+                IDiskSource writeDisk = _fileSystem!.DiskSource;
+                Ufs2FileSystem writeFs = _fileSystem!;
+
+                var writer = new PS3HddTool.Core.FileSystem.Ufs2Writer(
+                    writeFs, writeDisk, writeFs.PartitionOffsetBytes,
+                    DryRunMode, msg => Log(msg));
+                writer.VerboseLog = VerboseDiagnostics;
+
+                // Find game/ directory
+                var gameInode = writeFs.ResolvePath("game");
+                long gameInodeNumber;
+
+                if (gameInode == null)
+                {
+                    // Create game/ in root
+                    Log("  game/ directory not found — creating it.");
+                    gameInodeNumber = writer.CreateDirectory(2, "game");
+                    Log($"  Created game/ as inode {gameInodeNumber}");
+                }
+                else
+                {
+                    gameInodeNumber = gameInode.InodeNumber;
+                    Log($"  Found game/ at inode {gameInodeNumber}");
+                }
+
+                // Check if title already exists
+                if (writer.DirectoryContainsEntry(gameInodeNumber, titleId))
+                {
+                    Log($"  WARNING: game/{titleId} already exists — writing over it.");
+                }
+
+                // Copy extracted folder into game/
+                var allFiles = Directory.GetFiles(extractedDir, "*", SearchOption.AllDirectories);
+                long totalSize = allFiles.Sum(f => new FileInfo(f).Length);
+                int totalFiles = allFiles.Length;
+                var allDirs = Directory.GetDirectories(extractedDir, "*", SearchOption.AllDirectories);
+
+                Log($"  Writing {totalFiles} files, {allDirs.Length} subdirs, {FormatSize(totalSize)}");
+
+                var dirInodes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+
+                // Create title directory
+                long titleDirInode = writer.CreateDirectory(gameInodeNumber, titleId);
+                dirInodes[extractedDir] = titleDirInode;
+
+                // Create subdirectories first
+                foreach (string dir in allDirs.OrderBy(d => d.Length))
+                {
+                    string parentDir = Path.GetDirectoryName(dir)!;
+                    string dirName = Path.GetFileName(dir);
+
+                    if (!dirInodes.TryGetValue(parentDir, out long parentInode))
+                    {
+                        Log($"  WARNING: parent directory not found for {dir}");
+                        continue;
+                    }
+
+                    long dirInode = writer.CreateDirectory(parentInode, dirName);
+                    dirInodes[dir] = dirInode;
+                }
+
+                // Write files
+                int filesDone = 0;
+                long bytesDone = 0;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+
+                foreach (string file in allFiles)
+                {
+                    string parentDir = Path.GetDirectoryName(file)!;
+                    string fileName = Path.GetFileName(file);
+
+                    if (!dirInodes.TryGetValue(parentDir, out long parentInode))
+                        parentInode = titleDirInode;
+
+                    using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, 65536);
+                    writer.WriteFile(parentInode, fileName, fs, fs.Length);
+
+                    filesDone++;
+                    bytesDone += new FileInfo(file).Length;
+
+                    double pct = 40 + (double)filesDone / totalFiles * 55; // 40-95%
+                    ProgressValue = pct;
+                    double speedMBps = sw.Elapsed.TotalSeconds > 0.1
+                        ? (bytesDone / (1024.0 * 1024.0)) / sw.Elapsed.TotalSeconds : 0;
+                    ProgressText = $"{pct:F0}%  {filesDone}/{totalFiles} files  {speedMBps:F1} MB/s";
+                }
+
+                writer.UpdateSuperblock();
+            });
+
+            ProgressValue = 100;
+            RefreshFreeSpace();
+            StatusText = $"Installed {titleId} to game/{titleId}/ ({FormatSize(new DirectoryInfo(extractedDir).EnumerateFiles("*", SearchOption.AllDirectories).Sum(f => f.Length))})";
+            Log($"PKG install complete: game/{titleId}/");
+
+            // Refresh tree
+            await LoadDirectoryTreeAsync();
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"PKG Install Error: {ex.Message}";
+            Log($"ERROR installing PKG: {ex.Message}\n{ex.StackTrace}");
+        }
+        finally
+        {
+            IsBusy = false;
+            IsProgressIndeterminate = false;
+            ProgressValue = 0;
+            ProgressText = "";
+
+            // Clean up temp directory
+            if (tempDir != null)
+            {
+                try { Directory.Delete(tempDir, true); }
+                catch { }
+            }
+        }
     }
 }

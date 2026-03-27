@@ -60,59 +60,91 @@ public partial class MainWindow : Window
         e.DragEffects = DragDropEffects.Copy;
     }
 
-    private void OnDrop(object? sender, DragEventArgs e)
+    private async void OnDrop(object? sender, DragEventArgs e)
     {
         var fileNames = e.Data.GetFiles();
         if (fileNames == null) return;
-        
+
+        var paths = new List<string>();
         foreach (var item in fileNames)
         {
             string? path = item.TryGetLocalPath();
-            if (path == null) continue;
-            
-            string ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
-            
-            if (ext == ".bin" || ext == ".eid")
+            if (path != null) paths.Add(path);
+        }
+        if (paths.Count == 0) return;
+
+        // Check if the first file is a key file (legacy drag-drop for EID keys)
+        string firstExt = System.IO.Path.GetExtension(paths[0]).ToLowerInvariant();
+        if ((firstExt == ".bin" || firstExt == ".eid") && !_vm.IsFilesystemMounted)
+        {
+            // Key file drag-drop (existing behavior)
+            try
             {
-                try
+                byte[] data = System.IO.File.ReadAllBytes(paths[0]);
+                string hexKey;
+                if (data.Length == 48)
                 {
-                    byte[] data = System.IO.File.ReadAllBytes(path);
-                    
-                    // EID key is 48 bytes raw, or 96 hex chars in a text file
-                    string hexKey;
-                    if (data.Length == 48)
-                    {
-                        // Raw binary — 48 bytes
-                        hexKey = BitConverter.ToString(data).Replace("-", "");
-                    }
-                    else if (data.Length >= 96 && data.Length <= 200)
-                    {
-                        // Possibly hex-encoded text
-                        string text = System.Text.Encoding.ASCII.GetString(data).Trim();
-                        text = text.Replace("-", "").Replace(" ", "").Replace("\r", "").Replace("\n", "");
-                        if (text.Length == 96 && System.Text.RegularExpressions.Regex.IsMatch(text, "^[0-9a-fA-F]+$"))
-                            hexKey = text;
-                        else
-                        {
-                            _vm.StatusText = $"File '{System.IO.Path.GetFileName(path)}' is not a valid EID key (wrong format).";
-                            return;
-                        }
-                    }
+                    hexKey = BitConverter.ToString(data).Replace("-", "");
+                }
+                else if (data.Length >= 96 && data.Length <= 200)
+                {
+                    string text = System.Text.Encoding.ASCII.GetString(data).Trim();
+                    text = text.Replace("-", "").Replace(" ", "").Replace("\r", "").Replace("\n", "");
+                    if (text.Length == 96 && System.Text.RegularExpressions.Regex.IsMatch(text, "^[0-9a-fA-F]+$"))
+                        hexKey = text;
                     else
                     {
-                        _vm.StatusText = $"File '{System.IO.Path.GetFileName(path)}' is not a valid EID key ({data.Length} bytes, expected 48).";
+                        _vm.StatusText = $"File '{System.IO.Path.GetFileName(paths[0])}' is not a valid EID key.";
                         return;
                     }
-                    
-                    _vm.EidRootKeyHex = hexKey;
-                    _vm.StatusText = $"EID key loaded from {System.IO.Path.GetFileName(path)}";
-                    _vm.Log($"EID key loaded via drag-drop: {System.IO.Path.GetFileName(path)}");
                 }
-                catch (Exception ex)
+                else
                 {
-                    _vm.StatusText = $"Error reading key file: {ex.Message}";
+                    _vm.StatusText = $"File '{System.IO.Path.GetFileName(paths[0])}' is not a valid EID key ({data.Length} bytes).";
+                    return;
                 }
+                _vm.EidRootKeyHex = hexKey;
+                _vm.StatusText = $"EID key loaded from {System.IO.Path.GetFileName(paths[0])}";
+                _vm.Log($"EID key loaded via drag-drop: {System.IO.Path.GetFileName(paths[0])}");
+            }
+            catch (Exception ex)
+            {
+                _vm.StatusText = $"Error reading key file: {ex.Message}";
+            }
+            return;
+        }
+
+        // If filesystem is mounted, handle as file/folder copy to PS3
+        if (_vm.IsFilesystemMounted)
+        {
+            // Check for PKG files
+            if (paths.Count == 1 && firstExt == ".pkg")
+            {
+                await _vm.InstallPkgToHddAsync(paths[0]);
                 return;
+            }
+
+            // Determine target directory from selected node
+            long targetInode = 2; // root
+            string targetName = "/";
+            if (_vm.SelectedNode != null && _vm.SelectedNode.IsDirectory)
+            {
+                targetInode = _vm.SelectedNode.InodeNumber;
+                targetName = _vm.SelectedNode.FullPath;
+            }
+
+            foreach (string path in paths)
+            {
+                if (Directory.Exists(path))
+                {
+                    _vm.Log($"Drag-drop folder: {path} → {targetName}");
+                    await _vm.CopyFolderToPs3WithPath(path);
+                }
+                else if (File.Exists(path))
+                {
+                    _vm.Log($"Drag-drop file: {path} → {targetName}");
+                    await _vm.CopyFileToPs3WithPath(path);
+                }
             }
         }
     }
@@ -987,6 +1019,35 @@ public partial class MainWindow : Window
             string? path = folders[0].TryGetLocalPath();
             if (path != null)
                 await _vm.CopyFolderToPs3WithPath(path);
+        }
+    }
+
+    private void OnGoToRoot(object? sender, RoutedEventArgs e)
+    {
+        _vm.DeselectNode();
+        var tree = this.FindControl<TreeView>("FileTreeView");
+        if (tree != null)
+            tree.UnselectAll();
+    }
+
+    private async void OnInstallPkgToHdd(object? sender, RoutedEventArgs e)
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Select PKG to install to PS3 HDD",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("PS3 Package Files") { Patterns = new[] { "*.pkg" } },
+                new FilePickerFileType("All Files") { Patterns = new[] { "*" } }
+            }
+        });
+
+        if (files.Count > 0)
+        {
+            string? path = files[0].TryGetLocalPath();
+            if (path != null)
+                await _vm.InstallPkgToHddAsync(path);
         }
     }
 
