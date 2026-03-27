@@ -34,7 +34,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## Winter's Weak Copyleft Addendum v1.3.0
 
 Copyright 2026 WinterSys
-SPDX-License-Identifier: LicenseRef-WNT-CPYLFT-1.3.0
+SPDX-License-Identifier: BSD-3-Clause AND LicenseRef-WNT-CPYLFT-1.3.0
 
 In addition to any other licenses which may or may not be applied to this source
 and/or binary distribution, redistribution and use in source or binary forms,
