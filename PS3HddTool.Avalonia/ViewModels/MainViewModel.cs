@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.Numerics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using PS3HddTool.Core;
 using PS3HddTool.Core.Crypto;
 using PS3HddTool.Core.Disk;
 using PS3HddTool.Core.FileSystem;
@@ -16,6 +17,7 @@ public partial class MainViewModel : ObservableObject
     private DecryptedDiskSource? _decryptedSource;
     private Ufs2FileSystem? _fileSystem;
     private Ps3DiskLayout? _diskLayout;
+    private readonly DriveProfileDatabase _driveProfiles = new();
 
     // Stored for reopening with write access
     private string? _physicalDrivePath;
@@ -408,6 +410,135 @@ public partial class MainViewModel : ObservableObject
             byte[] rawSector0 = _diskSource.ReadSectors(0, 1);
             Log($"Raw sector 0 (first 64 bytes): {BitConverter.ToString(rawSector0[..64])}");
 
+            // ─── CACHED PROFILE: try instant decrypt from previous session ───
+            string driveFingerprint = DriveProfileDatabase.ComputeFingerprint(rawSector0);
+            var cachedProfile = _driveProfiles.Find(driveFingerprint);
+
+            if (cachedProfile != null)
+            {
+                Log($"Found cached drive profile: {cachedProfile.Label}");
+                Log($"  Encryption: {cachedProfile.EncryptionType}, bswap16={cachedProfile.Bswap16}, partition=0x{cachedProfile.PartitionSector:X}");
+
+                bool cacheHit = false;
+                try
+                {
+                    if (cachedProfile.EncryptionType == "CBC-192")
+                    {
+                        byte[] dataKey = Convert.FromHexString(cachedProfile.DataKeyHex);
+                        var cachedCbc = new DecryptedDiskSourceCbc(
+                            new NonDisposingDiskSource(_diskSource), dataKey, cachedProfile.Bswap16);
+
+                        // Verify UFS2 superblock is still there
+                        long sbOff = (cachedProfile.PartitionSector * 512) + 65536;
+                        byte[] sbData = cachedCbc.ReadBytes(sbOff, 8192);
+                        uint sbMagic = (uint)((sbData[0x55C] << 24) | (sbData[0x55D] << 16) |
+                                               (sbData[0x55E] << 8) | sbData[0x55F]);
+                        if (sbMagic == 0x19540119)
+                        {
+                            _cbcKey = (byte[])dataKey.Clone();
+                            _cbcBswap = cachedProfile.Bswap16;
+                            _partitionSector = cachedProfile.PartitionSector;
+                            _isXts = false;
+                            _fileSystem = new Ufs2FileSystem(cachedCbc, cachedProfile.PartitionSector);
+                            cacheHit = true;
+                            Log("  *** CACHE HIT: Instant decrypt successful! ***");
+                        }
+                        else
+                        {
+                            cachedCbc.Dispose();
+                            Log($"  Cache miss: UFS2 magic 0x{sbMagic:X8} != 0x19540119. Full scan needed.");
+                        }
+                    }
+                    else // XTS-128
+                    {
+                        byte[] dataKey = Convert.FromHexString(cachedProfile.DataKeyHex);
+                        byte[] tweakKey = Convert.FromHexString(cachedProfile.TweakKeyHex);
+                        var cachedXts = new DecryptedDiskSource(
+                            new NonDisposingDiskSource(_diskSource), dataKey, tweakKey, cachedProfile.Bswap16);
+
+                        long sbOff = (cachedProfile.PartitionSector * 512) + 65536;
+                        byte[] sbData = cachedXts.ReadBytes(sbOff, 8192);
+                        uint sbMagic = (uint)((sbData[0x55C] << 24) | (sbData[0x55D] << 16) |
+                                               (sbData[0x55E] << 8) | sbData[0x55F]);
+                        if (sbMagic == 0x19540119)
+                        {
+                            _xtsDataKey = (byte[])dataKey.Clone();
+                            _xtsTweakKey = (byte[])tweakKey.Clone();
+                            _xtsBswap = cachedProfile.Bswap16;
+                            _partitionSector = cachedProfile.PartitionSector;
+                            _isXts = true;
+                            _decryptedSource = cachedXts as DecryptedDiskSource;
+                            _fileSystem = new Ufs2FileSystem(cachedXts, cachedProfile.PartitionSector);
+                            cacheHit = true;
+                            Log("  *** CACHE HIT: Instant decrypt successful! ***");
+                        }
+                        else
+                        {
+                            cachedXts.Dispose();
+                            Log($"  Cache miss: UFS2 magic 0x{sbMagic:X8} != 0x19540119. Full scan needed.");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"  Cache validation failed: {ex.Message}. Full scan needed.");
+                }
+
+                if (cacheHit)
+                {
+                    // Skip straight to mounting
+                    IsDecrypted = true;
+                    EncryptionHint = cachedProfile.EncryptionType;
+
+                    _diskLayout = new Ps3DiskLayout { Partitions = new List<Ps3Partition>() };
+                    if (cachedProfile.PartitionSector > 0)
+                    {
+                        _diskLayout.Partitions.Add(new Ps3Partition
+                        {
+                            Index = 0, Name = "System", StartSector = 0,
+                            SectorCount = cachedProfile.PartitionSector, Type = Ps3PartitionType.System
+                        });
+                    }
+                    _diskLayout.Partitions.Add(new Ps3Partition
+                    {
+                        Index = _diskLayout.Partitions.Count, Name = "GameOS (UFS2)",
+                        StartSector = cachedProfile.PartitionSector,
+                        SectorCount = _diskSource.SectorCount - cachedProfile.PartitionSector,
+                        Type = Ps3PartitionType.GameOS
+                    });
+                    _diskLayout.DataRegionStartSector = cachedProfile.PartitionSector;
+                    _diskLayout.DataRegionSectorCount = _diskSource.SectorCount - cachedProfile.PartitionSector;
+
+                    Partitions.Clear();
+                    foreach (var p in _diskLayout.Partitions)
+                        Partitions.Add(p);
+
+                    if (DiskInfo != null)
+                    {
+                        DiskInfo.IsDecrypted = true;
+                        DiskInfo.PartitionCount = Partitions.Count;
+                        DiskInfo.Status = "Decrypted (cached) — mounting UFS2 filesystem...";
+                    }
+
+                    // Update last-used timestamp
+                    cachedProfile.LastUsed = DateTime.UtcNow;
+                    _driveProfiles.Save(cachedProfile);
+
+                    StatusText = "Instant decrypt from cache. Mounting filesystem...";
+                    await MountFilesystemAsync();
+
+                    IsBusy = false;
+                    IsProgressIndeterminate = false;
+                    return;
+                }
+                else
+                {
+                    // Remove stale cache entry
+                    _driveProfiles.Remove(driveFingerprint);
+                }
+            }
+
+            // ─── No cache hit — proceed with full scan ───
             bool hasErkDerivedCbc = !isPreDerivedXts && !isPreDerivedCbc;
             Log($"Will try {(hasErkDerivedCbc ? "CBC-192 (NAND) + " : isPreDerivedCbc ? "CBC-192 (pre-derived) + " : "")}{allKeys.Count} XTS key method(s) x 2 bswap modes x {CandidatePartitionStarts.Length} partition offsets...");
 
@@ -863,6 +994,38 @@ public partial class MainViewModel : ObservableObject
                 }
 
                 StatusText = "Decryption successful. Mounting filesystem...";
+
+                // ─── AUTO-SAVE: cache the successful key combo for instant re-decrypt ───
+                try
+                {
+                    var profile = new DriveProfile
+                    {
+                        Fingerprint = driveFingerprint,
+                        EncryptionType = foundCbc ? "CBC-192" : "XTS-128",
+                        Bswap16 = foundBswap,
+                        PartitionSector = foundPartitionSector,
+                        Label = foundMethod,
+                        DriveSizeBytes = _diskSource.TotalSize
+                    };
+
+                    if (foundCbc && _cbcKey != null)
+                    {
+                        profile.DataKeyHex = Convert.ToHexString(_cbcKey);
+                    }
+                    else if (_xtsDataKey != null && _xtsTweakKey != null)
+                    {
+                        profile.DataKeyHex = Convert.ToHexString(_xtsDataKey);
+                        profile.TweakKeyHex = Convert.ToHexString(_xtsTweakKey);
+                    }
+
+                    _driveProfiles.Save(profile);
+                    Log($"Drive profile cached for instant re-decrypt (fingerprint: {driveFingerprint[..16]}...)");
+                }
+                catch (Exception ex)
+                {
+                    Log($"Warning: could not cache drive profile: {ex.Message}");
+                }
+
                 await MountFilesystemAsync();
             }
             else

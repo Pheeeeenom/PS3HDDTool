@@ -1417,6 +1417,12 @@ public class Ufs2Writer
             swFlush.Start();
             int flushedBlocks = _batchBlockCount;
             InternalFlushBatch(blockSize);
+            // BUG FIX #23: Must wait for async batch write to complete before any
+            // synchronous metadata writes (WriteDataBlock, WriteCylinderGroup) that
+            // follow. Without this wait, the async batch write and sync metadata write
+            // race on the same disk handle, corrupting data in large files that use
+            // double indirect blocks (>33MB).
+            _pendingWrite?.Wait();
             totalFlushedBytes += flushedBlocks * blockSize;
             flushCount++;
             swFlush.Stop();
@@ -1445,11 +1451,10 @@ public class Ufs2Writer
             // Use batch allocation for full blocks — avoids per-block bitmap scanning
             if (fragsThisBlock == fragsPerBlock && _batchAllocRemaining > 0 && _batchAllocCg == currentCg)
             {
-                // Use next block from pre-allocated run
+                // Use next block from pre-allocated run (already marked used in bitmap)
                 freeFrag = _batchAllocNextFrag;
                 _batchAllocNextFrag += fragsPerBlock;
                 _batchAllocRemaining--;
-                MarkFragmentsUsed(currentCgInfo, (int)freeFrag, fragsPerBlock);
             }
             else if (fragsThisBlock == fragsPerBlock)
             {
@@ -1478,7 +1483,15 @@ public class Ufs2Writer
                 _batchAllocNextFrag = runStart + fragsPerBlock;
                 _batchAllocRemaining = runCount - 1;
                 _batchAllocCg = currentCg;
-                MarkFragmentsUsed(currentCgInfo, (int)freeFrag, fragsPerBlock);
+                // BUG FIX #23: Mark ALL blocks in the pre-allocated run as used in the
+                // bitmap immediately. Previously only the first block was marked, leaving
+                // the rest appearing "free" in the bitmap. When metadata blocks (L1 indirect,
+                // double indirect) were allocated via FindFreeFragments during the same file
+                // write, they would collide with unconsumed batch blocks — both pointing to
+                // the same disk location. Data blocks would then overwrite the metadata,
+                // corrupting files >33MB that use double indirect blocks.
+                for (int rb = 0; rb < runCount; rb++)
+                    MarkFragmentsUsed(currentCgInfo, (int)(runStart + rb * fragsPerBlock), fragsPerBlock);
             }
             else
             {

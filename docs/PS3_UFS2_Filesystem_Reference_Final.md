@@ -417,17 +417,18 @@ During development of the PS3 HDD Tool UFS2 writer, 22 structural bugs were disc
 11. **File data block alignment** (Bug 3) — Data blocks not aligned to block boundaries.
 12. **Tail allocation** (Bug 5) — Last block of direct-only files used wrong fragment count.
 13. **di_blocks calculation for directories** (Bug 16) — Directories had wrong sector count after fragment-to-block reallocation.
+14. **Batch allocator fragment bitmap collision** (Bug 23) — Files larger than ~33MB (those requiring double indirect blocks) would have corrupted data when read back.
 
 ### Directory Growth (caused GT6 console crashes)
-14. **Case 2 read/write overflow** (Bug 21) — Growing a directory within its block assumed block 0 was always 16KB. But block 0 starts as a 4KB fragment, so this wrote 12KB into adjacent file data.
-15. **Blind fragment reallocation** (Bug 22) — When expanding a directory fragment to a full block, adjacent fragments were blindly marked as used and overwritten, even when they already contained file data. Fixed by checking adjacency and relocating the block if needed.
+15. **Case 2 read/write overflow** (Bug 21) — Growing a directory within its block assumed block 0 was always 16KB. But block 0 starts as a 4KB fragment, so this wrote 12KB into adjacent file data.
+16. **Blind fragment reallocation** (Bug 22) — When expanding a directory fragment to a full block, adjacent fragments were blindly marked as used and overwritten, even when they already contained file data. Fixed by checking adjacency and relocating the block if needed.
 
 ### Data Reading/Writing
-16. **Inode timestamp reader offsets** (Bug 2) — Timestamps read from wrong byte offsets.
-17. **ReadInodeData fragment overread** (Bug 13) — Reader consumed more fragments than allocated.
-18. **Cross-directory corruption** (Bug 10) — Block writes to one directory affected another.
-19. **PKG extraction 64-bit offset truncation** (Bug 20) — PKG entry offsets read as 32-bit, causing wrong data for files past 4GB in large PKGs.
-20. **game/ directory mode** (Bug 6) — Used 0x41ED instead of 0x41FF for game directories.
+17. **Inode timestamp reader offsets** (Bug 2) — Timestamps read from wrong byte offsets.
+18. **ReadInodeData fragment overread** (Bug 13) — Reader consumed more fragments than allocated.
+19. **Cross-directory corruption** (Bug 10) — Block writes to one directory affected another.
+20. **PKG extraction 64-bit offset truncation** (Bug 20) — PKG entry offsets read as 32-bit, causing wrong data for files past 4GB in large PKGs.
+21. **game/ directory mode** (Bug 6) — Used 0x41ED instead of 0x41FF for game directories.
 
 ---
 
