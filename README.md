@@ -130,4 +130,4 @@ PS3HddTool/
 
 ## License
 
-This tool is for personal use with your own PS3 console and hard drive.
+See License.md
