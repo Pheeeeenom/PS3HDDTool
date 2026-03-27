@@ -1,6 +1,6 @@
 # PS3 HDD Tool
 
-A cross-platform GUI application for decrypting and browsing PS3 hard drives using your console's EID Root Key.
+A cross-platform GUI application for decrypting and browsing PS3 hard drives using per-console HDD Key.
 
 Built with **.NET 8** and **Avalonia UI** — runs on Windows, macOS, and Linux.
 
@@ -115,8 +115,6 @@ PS3HddTool/
 ```
 
 ## Important Notes
-
-- **Read-only**: This tool only reads from the disk. It never writes to your PS3 HDD.
 - **EID Root Key**: You need to obtain this from your own console (e.g., via PS3Xploit, hardware flasher, or UART dump). This tool does not extract the key.
 - **Large drives**: For HDDs over 500GB, initial directory loading may take a moment as sectors are decrypted on-the-fly.
 - **Key verification**: If the UFS2 superblock isn't found after decryption, the key may be incorrect or the partition layout may differ from the standard one.
