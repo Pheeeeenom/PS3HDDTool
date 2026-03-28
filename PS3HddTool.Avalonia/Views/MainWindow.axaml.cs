@@ -1181,7 +1181,7 @@ public partial class MainWindow : Window
             Text = " HDD TOOL",
             FontSize = 24,
             FontWeight = global::Avalonia.Media.FontWeight.Light,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#384858")),
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#607888")),
             VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Bottom,
             Margin = new global::Avalonia.Thickness(0, 0, 0, 2)
         });
@@ -1200,7 +1200,7 @@ public partial class MainWindow : Window
         {
             Text = "v1.0",
             FontSize = 11,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#406080")),
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#6898B8")),
             HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center
         };
         panel.Children.Add(versionBorder);
@@ -1218,7 +1218,7 @@ public partial class MainWindow : Window
         {
             Text = "Decrypt, browse, extract, and write files to\nPS3 Fat NAND encrypted hard drives.",
             TextAlignment = global::Avalonia.Media.TextAlignment.Center,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#7888A0")),
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#98A8C0")),
             FontSize = 13,
             LineHeight = 22,
             Margin = new global::Avalonia.Thickness(0, 4)
@@ -1238,7 +1238,7 @@ public partial class MainWindow : Window
             Text = "CREATED BY",
             FontSize = 10,
             FontWeight = global::Avalonia.Media.FontWeight.Bold,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#304060")),
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5888A8")),
             HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
             Margin = new global::Avalonia.Thickness(0, 6, 0, 2)
         });
@@ -1267,7 +1267,7 @@ public partial class MainWindow : Window
         {
             Text = "Cross-platform  ·  .NET  ·  Avalonia",
             FontSize = 11,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#304060")),
+            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5888A8")),
             TextAlignment = global::Avalonia.Media.TextAlignment.Center,
             Margin = new global::Avalonia.Thickness(0, 4)
         });

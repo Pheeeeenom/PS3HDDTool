@@ -228,7 +228,7 @@ public partial class MainViewModel : ObservableObject
         0x400018, 0x400020, 0x400000, 0x3FFFF8, // dev_hdd0 (after ~2GB dev_hdd1)
         // Slim/NOR: VFLASH=0x80000 sectors, GameOS starts after VFLASH + padding
         0x80018, 0x80020, 0x80028, 0x80010, 0x80008, 0x80030,
-        0, 2, 8, 16, 0x20, 0x22, 0x28, 0x30, 0x40, 0x80,
+        0, 2, 8, 16, 0x18, 0x20, 0x22, 0x28, 0x30, 0x40, 0x80,
         128, 256, 512, 1024, 
         0x800, 0x1000, 0x2000, 0x4000, 0x8000,
         0x10000, 0x20000, 
@@ -551,10 +551,10 @@ public partial class MainViewModel : ObservableObject
 
             await Task.Run(() =>
             {
-                // ─── FAST PATH: Try known CECHA config first (CBC-192 + bswap16 + sector 0x20) ───
+                // ─── FAST PATH: Try known Fat NAND config (CBC-192 + bswap16 + common offsets) ───
                 if (EncryptionHint != "XTS-128")
                 {
-                Log("Trying fast path: CBC-192 + bswap16 + partition sector 0x20...");
+                Log("Trying fast path: CBC-192 + bswap16 + common partition offsets...");
                 try
                 {
                     var fastCandidate = new DecryptedDiskSourceCbc(
@@ -568,20 +568,25 @@ public partial class MainViewModel : ObservableObject
                     
                     if (fm1 == 0x0FACE0FF && fm2 == 0xDEADFACE)
                     {
-                        // Partition table valid! Check UFS2 at sector 0x20
-                        long sbOff = (0x20 * 512) + 65536;
-                        byte[] sbData = fastCandidate.ReadBytes(sbOff, 8192);
-                        uint sbMagic = (uint)((sbData[0x55C] << 24) | (sbData[0x55D] << 16) |
-                                               (sbData[0x55E] << 8) | sbData[0x55F]);
-                        
-                        if (sbMagic == 0x19540119)
+                        // Partition table valid! Try common UFS2 offsets
+                        foreach (long fastPart in new long[] { 0x20, 0x18, 0x10, 0x28, 0x30, 0x08 })
                         {
-                            found = true;
-                            foundMethod = "AES-CBC-192 NAND [bswap16=True] (fast path)";
-                            foundPartitionSector = 0x20;
-                            foundBswap = true;
-                            foundCbc = true;
-                            Log("  *** FAST PATH SUCCESS: CECHA NAND detected! ***");
+                            long sbOff = (fastPart * 512) + 65536;
+                            if (sbOff + 8192 > _diskSource.TotalSize) continue;
+                            byte[] sbData = fastCandidate.ReadBytes(sbOff, 8192);
+                            uint sbMagic = (uint)((sbData[0x55C] << 24) | (sbData[0x55D] << 16) |
+                                                   (sbData[0x55E] << 8) | sbData[0x55F]);
+                            
+                            if (sbMagic == 0x19540119)
+                            {
+                                found = true;
+                                foundMethod = $"AES-CBC-192 NAND [bswap16=True] (fast path @ 0x{fastPart:X})";
+                                foundPartitionSector = fastPart;
+                                foundBswap = true;
+                                foundCbc = true;
+                                Log($"  *** FAST PATH SUCCESS: Fat NAND detected at sector 0x{fastPart:X}! ***");
+                                break;
+                            }
                         }
                     }
                     fastCandidate.Dispose();
@@ -732,6 +737,7 @@ public partial class MainViewModel : ObservableObject
                                         int ncg = (scanData[0xBC] << 24) | (scanData[0xBD] << 16) |
                                                   (scanData[0xBE] << 8) | scanData[0xBF];
                                         Log($"    *** UFS2 at sector 0x{scanSec:X} ({ncg} CGs) ***");
+                                        allStarts.Add(scanSec); // Add discovered offset to candidates
                                         foundCount++;
                                     }
                                 }
@@ -897,6 +903,34 @@ public partial class MainViewModel : ObservableObject
                         catch (Exception ex)
                         {
                             Log($"    [{label}] partition 0x{partStart:X}: error: {ex.Message}");
+                        }
+                    }
+
+                    // Fine scan fallback: sweep first 2GB every 8 sectors
+                    if (!found)
+                    {
+                        for (long scanSec = 0; scanSec < 0x400000 && !found; scanSec += 8)
+                        {
+                            long scanOff = (scanSec * 512) + 65536;
+                            if (scanOff + 8192 > _diskSource.TotalSize) continue;
+                            try
+                            {
+                                byte[] scanData = candidate.ReadBytes(scanOff, 8192);
+                                uint scanMagic = (uint)((scanData[0x55C] << 24) | (scanData[0x55D] << 16) |
+                                                         (scanData[0x55E] << 8) | scanData[0x55F]);
+                                if (scanMagic == 0x19540119)
+                                {
+                                    found = true;
+                                    foundMethod = label;
+                                    foundPartitionSector = scanSec;
+                                    foundBswap = useBswap;
+                                    _decryptedSource?.Dispose();
+                                    _decryptedSource = new DecryptedDiskSource(
+                                        _diskSource, dataKey, tweakKey, useBswap);
+                                    Log($"    [{label}] Fine scan found UFS2 at sector 0x{scanSec:X}");
+                                }
+                            }
+                            catch { }
                         }
                     }
 

@@ -21,7 +21,7 @@
         <Style Selector="TextBlock.header">
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="Foreground" Value="#4070A0"/>
+            <Setter Property="Foreground" Value="#5590C0"/>
             <Setter Property="Margin" Value="0,0,0,10"/>
             <Setter Property="LetterSpacing" Value="2.5"/>
         </Style>
@@ -59,7 +59,7 @@
         <!-- Default button: dark chrome -->
         <Style Selector="Button">
             <Setter Property="Background" Value="#0C0C18"/>
-            <Setter Property="Foreground" Value="#7888A0"/>
+            <Setter Property="Foreground" Value="#B0BECE"/>
             <Setter Property="BorderBrush" Value="#1C1C34"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="3"/>
@@ -68,7 +68,7 @@
         </Style>
         <Style Selector="Button:pointerover">
             <Setter Property="Background" Value="#14142A"/>
-            <Setter Property="Foreground" Value="#A0B0C8"/>
+            <Setter Property="Foreground" Value="#C0D0E8"/>
             <Setter Property="BorderBrush" Value="#252546"/>
         </Style>
         <Style Selector="Button:pressed">
@@ -89,7 +89,7 @@
         <!-- TextBox: deep recessed input -->
         <Style Selector="TextBox">
             <Setter Property="Background" Value="#040408"/>
-            <Setter Property="Foreground" Value="#90A0B8"/>
+            <Setter Property="Foreground" Value="#A8B8D0"/>
             <Setter Property="BorderBrush" Value="#14142A"/>
             <Setter Property="CornerRadius" Value="3"/>
             <Setter Property="Padding" Value="8,6"/>
@@ -98,12 +98,12 @@
             <Setter Property="BorderBrush" Value="#004488"/>
         </Style>
         <Style Selector="TextBox /template/ TextBlock#PART_Watermark">
-            <Setter Property="Foreground" Value="#282840"/>
+            <Setter Property="Foreground" Value="#505878"/>
         </Style>
 
         <!-- CheckBox -->
         <Style Selector="CheckBox">
-            <Setter Property="Foreground" Value="#506070"/>
+            <Setter Property="Foreground" Value="#98A8C0"/>
             <Setter Property="FontSize" Value="11"/>
         </Style>
 
@@ -112,7 +112,7 @@
             <Setter Property="Background" Value="Transparent"/>
         </Style>
         <Style Selector="TreeViewItem">
-            <Setter Property="Foreground" Value="#8898B0"/>
+            <Setter Property="Foreground" Value="#A0B0C8"/>
             <Setter Property="Padding" Value="0"/>
             <Setter Property="Margin" Value="0,1"/>
         </Style>
@@ -190,7 +190,7 @@
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,20,0">
                         <TextBlock Text="PS3" FontSize="24" FontWeight="Bold" Foreground="#005AAA"
                                    VerticalAlignment="Bottom"/>
-                        <TextBlock Text=" HDD TOOL" FontSize="18" FontWeight="Light" Foreground="#384858"
+                        <TextBlock Text=" HDD TOOL" FontSize="18" FontWeight="Light" Foreground="#607888"
                                    LetterSpacing="3" VerticalAlignment="Bottom" Margin="2,0,0,2"/>
                     </StackPanel>
 
@@ -207,7 +207,7 @@
 
                     <!-- Disk status -->
                     <TextBlock Grid.Column="5" Text="{Binding DiskInfo.Source, FallbackValue='No disk loaded'}"
-                               VerticalAlignment="Center" Foreground="#303848" FontSize="11"
+                               VerticalAlignment="Center" Foreground="#607080" FontSize="11"
                                FontFamily="Consolas,Courier New,monospace" Margin="0,0,12,0"/>
 
                     <Border Classes="sep-v" Grid.Column="6"/>
@@ -224,7 +224,7 @@
                     <Button Grid.Column="2" Content="Export" Click="OnExportKeys"
                             Margin="0,0,8,0" ToolTip.Tip="Derive and export key files (ata_data_key.bin, hdd_key.bin, etc.) from EID Root Key"/>
                     <TextBlock Text="ENCRYPTION KEY" VerticalAlignment="Center" Margin="0,0,10,0" Grid.Column="3"
-                               Foreground="#304060" FontSize="10" FontWeight="Bold" LetterSpacing="1.5"/>
+                               Foreground="#5888A8" FontSize="10" FontWeight="Bold" LetterSpacing="1.5"/>
                     <TextBox Grid.Column="4" Text="{Binding EidRootKeyHex}"
                              Watermark="EID root key (96 hex), or use Import for hdd_key.bin / ata_data_key.bin"
                              FontFamily="Consolas,Courier New,monospace" FontSize="11"
@@ -271,7 +271,7 @@
                             <TextBlock Classes="header" Text="FILESYSTEM" Margin="0"/>
                             <!-- Free space display -->
                             <TextBlock Grid.Column="1" Text="{Binding FreeSpaceText}"
-                                       FontSize="10" Foreground="#2A6030"
+                                       FontSize="10" Foreground="#40A050"
                                        VerticalAlignment="Center" HorizontalAlignment="Center"
                                        IsVisible="{Binding IsFilesystemMounted}"
                                        FontFamily="Consolas,Courier New,monospace"/>
@@ -280,7 +280,7 @@
                                     Padding="8,2" IsVisible="{Binding IsDecrypted}"
                                     VerticalAlignment="Center">
                                 <TextBlock Text="{Binding Partitions.Count, StringFormat='{}{0} partitions'}"
-                                           FontSize="10" Foreground="#406080"/>
+                                           FontSize="10" Foreground="#6898B8"/>
                             </Border>
                         </Grid>
                     </Border>
@@ -297,7 +297,7 @@
                                     <TextBlock Text="{Binding Label}" VerticalAlignment="Center"
                                                Grid.Column="1" FontSize="12" TextTrimming="CharacterEllipsis"/>
                                     <TextBlock Text="{Binding SizeFormatted}" FontSize="9"
-                                               Foreground="#283040" VerticalAlignment="Center"
+                                               Foreground="#7A8A9C" VerticalAlignment="Center"
                                                Grid.Column="2" Margin="8,0,4,0"
                                                FontFamily="Consolas,Courier New,monospace"/>
                                 </Grid>
@@ -327,11 +327,11 @@
                                 <Border Background="#0A0A14" CornerRadius="4" Padding="14,8"
                                         BorderBrush="#14142A" BorderThickness="1">
                                     <StackPanel Spacing="2">
-                                        <TextBlock Text="{Binding Name}" FontSize="12" Foreground="#8898B0"/>
+                                        <TextBlock Text="{Binding Name}" FontSize="12" Foreground="#A0B0C8"/>
                                         <StackPanel Orientation="Horizontal" Spacing="8">
                                             <TextBlock Text="{Binding SizeFormatted}" FontSize="10"
-                                                       Foreground="#384858" FontFamily="Consolas,Courier New,monospace"/>
-                                            <TextBlock Text="{Binding Type}" FontSize="10" Foreground="#204060"/>
+                                                       Foreground="#607888" FontFamily="Consolas,Courier New,monospace"/>
+                                            <TextBlock Text="{Binding Type}" FontSize="10" Foreground="#4878A8"/>
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
@@ -360,32 +360,32 @@
                                 </Border.Styles>
 
                                 <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" >
-                                    <TextBlock Text="NAME" Foreground="#304060" Grid.Row="0"
+                                    <TextBlock Text="NAME" Foreground="#5888A8" Grid.Row="0"
                                                FontSize="10" FontWeight="Bold" LetterSpacing="1" Margin="0,0,0,2"/>
                                     <TextBlock Text="{Binding SelectedNode.Name}" Grid.Row="0" Grid.Column="1"
                                                FontWeight="SemiBold" Foreground="#C0D4F0" FontSize="14"/>
 
-                                    <TextBlock Text="PATH" Foreground="#304060" Grid.Row="1"
+                                    <TextBlock Text="PATH" Foreground="#5888A8" Grid.Row="1"
                                                FontSize="10" FontWeight="Bold" LetterSpacing="1" Margin="0,8,0,2"/>
                                     <TextBlock Text="{Binding SelectedNode.FullPath}" Grid.Row="1" Grid.Column="1"
                                                FontFamily="Consolas,Courier New,monospace" FontSize="11"
-                                               Foreground="#506880" Margin="0,8,0,0"/>
+                                               Foreground="#7898B8" Margin="0,8,0,0"/>
 
-                                    <TextBlock Text="SIZE" Foreground="#304060" Grid.Row="2"
+                                    <TextBlock Text="SIZE" Foreground="#5888A8" Grid.Row="2"
                                                FontSize="10" FontWeight="Bold" LetterSpacing="1" Margin="0,8,0,2"/>
                                     <TextBlock Text="{Binding SelectedNode.SizeFormatted}" Grid.Row="2" Grid.Column="1"
-                                               Foreground="#8898B0" FontSize="12" Margin="0,8,0,0"/>
+                                               Foreground="#A0B0C8" FontSize="12" Margin="0,8,0,0"/>
 
-                                    <TextBlock Text="MODIFIED" Foreground="#304060" Grid.Row="3"
+                                    <TextBlock Text="MODIFIED" Foreground="#5888A8" Grid.Row="3"
                                                FontSize="10" FontWeight="Bold" LetterSpacing="1" Margin="0,8,0,2"/>
                                     <TextBlock Text="{Binding SelectedNode.Modified}" Grid.Row="3" Grid.Column="1"
-                                               Foreground="#8898B0" FontSize="12" Margin="0,8,0,0"/>
+                                               Foreground="#A0B0C8" FontSize="12" Margin="0,8,0,0"/>
 
-                                    <TextBlock Text="MODE" Foreground="#304060" Grid.Row="4"
+                                    <TextBlock Text="MODE" Foreground="#5888A8" Grid.Row="4"
                                                FontSize="10" FontWeight="Bold" LetterSpacing="1" Margin="0,8,0,2"/>
                                     <TextBlock Text="{Binding SelectedNode.Permissions}" Grid.Row="4" Grid.Column="1"
                                                FontFamily="Consolas,Courier New,monospace"
-                                               Foreground="#506880" FontSize="11" Margin="0,8,0,0"/>
+                                               Foreground="#7898B8" FontSize="11" Margin="0,8,0,0"/>
                                 </Grid>
                             </Border>
 
@@ -402,7 +402,7 @@
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8"
                                     IsVisible="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNull}}">
                             <TextBlock Text="📁" FontSize="32" HorizontalAlignment="Center" Opacity="0.15"/>
-                            <TextBlock Text="Select a file or folder" Foreground="#1A1A30"
+                            <TextBlock Text="Select a file or folder" Foreground="#303858"
                                        FontSize="13" HorizontalAlignment="Center"/>
                         </StackPanel>
                     </Grid>
@@ -422,7 +422,7 @@
                          Background="Transparent" Margin="8,2">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <TextBlock Text="{Binding}" Foreground="#303848"/>
+                            <TextBlock Text="{Binding}" Foreground="#607080"/>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
@@ -438,7 +438,7 @@
                 </LinearGradientBrush>
             </Border.Background>
             <Grid ColumnDefinitions="*,Auto,Auto">
-                <TextBlock Text="{Binding StatusText}" Foreground="#304060"
+                <TextBlock Text="{Binding StatusText}" Foreground="#5888A8"
                            VerticalAlignment="Center" FontSize="11"/>
                 <TextBlock Grid.Column="1" Text="{Binding ProgressText}" Foreground="#0070CC"
                            VerticalAlignment="Center" Margin="16,0" FontSize="11"
