@@ -16,7 +16,7 @@ Built with **.NET 8** and **Avalonia UI** — runs on Windows, macOS, and Linux.
 ## Prerequisites
 
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- Your PS3 console's **EID Root Key** (32 bytes / 64 hex characters)
+- Your PS3 console's **EID Root Key OR ATA key + tweak from qCFW** (32 bytes / 64 hex characters)
 
 ## Building
 
