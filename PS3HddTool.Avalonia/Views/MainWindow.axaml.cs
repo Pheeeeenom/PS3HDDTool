@@ -57,21 +57,101 @@ public partial class MainWindow : Window
 
     private void OnDragOver(object? sender, DragEventArgs e)
     {
-        e.DragEffects = DragDropEffects.Copy;
+        e.DragEffects = HasDroppableFiles(e.Data) ? DragDropEffects.Copy : DragDropEffects.None;
+    }
+
+    private static bool HasDroppableFiles(IDataObject data)
+    {
+        if (data.Contains(DataFormats.Files) || data.Contains(DataFormats.FileNames))
+            return true;
+        if (data.Contains("text/uri-list"))
+            return true;
+        // Some Linux file managers only expose text — check if it looks like a file URI list
+        if (data.Contains(DataFormats.Text))
+        {
+            string? t = data.GetText();
+            if (!string.IsNullOrEmpty(t) && t.Contains("file://", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Extract local file paths from a drop payload. Tries Avalonia's Files API first,
+    /// then legacy FileNames, then text/uri-list (Linux X11 file managers like Thunar,
+    /// Nautilus, and Dolphin typically use this). Handles URL-encoded paths.
+    /// </summary>
+    private static List<string> ExtractPathsFromDrop(IDataObject data)
+    {
+        var paths = new List<string>();
+
+        // 1) Preferred: Avalonia storage items
+        var files = data.GetFiles();
+        if (files != null)
+        {
+            foreach (var item in files)
+            {
+                string? path = item.TryGetLocalPath();
+                if (!string.IsNullOrEmpty(path)) paths.Add(path);
+            }
+            if (paths.Count > 0) return paths;
+        }
+
+        // 2) Legacy FileNames (Windows shell, some X11 bridges)
+        if (data.Contains(DataFormats.FileNames))
+        {
+            if (data.Get(DataFormats.FileNames) is IEnumerable<string> names)
+            {
+                foreach (var n in names)
+                    if (!string.IsNullOrEmpty(n)) paths.Add(n);
+                if (paths.Count > 0) return paths;
+            }
+        }
+
+        // 3) text/uri-list — the XDND standard used by GTK/Qt file managers on Linux
+        string? uriList = null;
+        if (data.Contains("text/uri-list"))
+        {
+            var raw = data.Get("text/uri-list");
+            uriList = raw switch
+            {
+                string s => s,
+                byte[] b => System.Text.Encoding.UTF8.GetString(b),
+                _ => raw?.ToString()
+            };
+        }
+        uriList ??= data.GetText();
+
+        if (!string.IsNullOrEmpty(uriList))
+        {
+            foreach (var line in uriList.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string trimmed = line.Trim();
+                if (trimmed.Length == 0 || trimmed.StartsWith("#")) continue;
+                if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) && uri.IsFile)
+                    paths.Add(uri.LocalPath);
+                else if (System.IO.File.Exists(trimmed) || System.IO.Directory.Exists(trimmed))
+                    paths.Add(trimmed);
+            }
+        }
+
+        return paths;
     }
 
     private async void OnDrop(object? sender, DragEventArgs e)
     {
-        var fileNames = e.Data.GetFiles();
-        if (fileNames == null) return;
+        var formats = string.Join(", ", e.Data.GetDataFormats());
+        _vm.Log($"Drag-drop received. Formats: [{formats}]");
 
-        var paths = new List<string>();
-        foreach (var item in fileNames)
+        var paths = ExtractPathsFromDrop(e.Data);
+        if (paths.Count == 0)
         {
-            string? path = item.TryGetLocalPath();
-            if (path != null) paths.Add(path);
+            _vm.StatusText = "Drop received but no files found in payload. On Linux, try running without sudo, or use the Copy File / Copy Folder buttons.";
+            _vm.Log($"Drag-drop: no files extracted. Available formats were: [{formats}]");
+            return;
         }
-        if (paths.Count == 0) return;
+
+        _vm.Log($"Drag-drop: {paths.Count} item(s): {string.Join(", ", paths)}");
 
         // Check if the first file is a key file (legacy drag-drop for EID keys)
         string firstExt = System.IO.Path.GetExtension(paths[0]).ToLowerInvariant();
@@ -145,7 +225,16 @@ public partial class MainWindow : Window
                     _vm.Log($"Drag-drop file: {path} → {targetName}");
                     await _vm.CopyFileToPs3WithPath(path);
                 }
+                else
+                {
+                    _vm.StatusText = $"Path not accessible: {path}";
+                    _vm.Log($"Drag-drop: path not accessible (may be a permissions issue): {path}");
+                }
             }
+        }
+        else
+        {
+            _vm.StatusText = "Open and decrypt a PS3 disk first, then drag files to copy them.";
         }
     }
 
