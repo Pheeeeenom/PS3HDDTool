@@ -2139,6 +2139,24 @@ public partial class MainViewModel : ObservableObject
                 }
                 else
                     Log($"[FAKE WRITE TEST] {writer.PendingWrites.Count} writes would be performed. No data written.");
+
+                // io diag to verify which write path actually carried the data & at what rate... this goes past the bulk flush timing in Ufs2Writer
+                if (_diskSource is PhysicalDiskSource pds)
+                {
+                    Log($"  IO unbuffered handle: {pds.UnbufferedHandleStatus}");
+                    if (pds.UnbufferedBytesWritten > 0)
+                    {
+                        double mb = pds.UnbufferedBytesWritten / (1024.0 * 1024.0);
+                        double sec = pds.UnbufferedWriteMs / 1000.0;
+                        Log($"  IO unbuffered: {mb:F1} MB in {pds.UnbufferedWriteMs} ms = {(sec > 0 ? mb / sec : 0):F1} MB/s");
+                    }
+                    if (pds.BufferedBytesWritten > 0)
+                    {
+                        double mb = pds.BufferedBytesWritten / (1024.0 * 1024.0);
+                        double sec = pds.BufferedWriteMs / 1000.0;
+                        Log($"  IO buffered: {mb:F2} MB in {pds.BufferedWriteMs} ms = {(sec > 0 ? mb / sec : 0):F1} MB/s");
+                    }
+                }
             });
 
             StatusText = DryRunMode 

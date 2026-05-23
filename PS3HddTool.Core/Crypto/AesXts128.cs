@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Runtime.Intrinsics;
 using System.Security.Cryptography;
 
 namespace PS3HddTool.Core.Crypto;
@@ -20,6 +22,7 @@ public sealed class AesXts128 : IDisposable
 
     public const int SectorSize = 512;
     public const int BlockSize = 16;
+    private const int BlocksPerSector = SectorSize / BlockSize; // 32
 
     public AesXts128(byte[] dataKey, byte[] tweakKey)
     {
@@ -32,56 +35,28 @@ public sealed class AesXts128 : IDisposable
         _tweakKey = (byte[])tweakKey.Clone();
     }
 
-    public byte[] DecryptSectors(byte[] ciphertext, long startSectorNumber)
+    private sealed class ThreadCtx : IDisposable
     {
-        if (ciphertext.Length % SectorSize != 0)
-            throw new ArgumentException($"Length must be a multiple of {SectorSize}.");
+        public readonly Aes DataAes;
+        public readonly Aes TweakAes;
 
-        byte[] plaintext = new byte[ciphertext.Length];
-        int sectorCount = ciphertext.Length / SectorSize;
-
-        for (int i = 0; i < sectorCount; i++)
+        public ThreadCtx(byte[] dataKey, byte[] tweakKey)
         {
-            DecryptSector(ciphertext, i * SectorSize, plaintext, i * SectorSize,
-                          startSectorNumber + i);
+            DataAes = Aes.Create();
+            DataAes.Key = dataKey;
+            DataAes.Mode = CipherMode.ECB;
+            DataAes.Padding = PaddingMode.None;
+
+            TweakAes = Aes.Create();
+            TweakAes.Key = tweakKey;
+            TweakAes.Mode = CipherMode.ECB;
+            TweakAes.Padding = PaddingMode.None;
         }
 
-        return plaintext;
-    }
-
-    private void DecryptSector(byte[] input, int inputOffset, byte[] output, int outputOffset,
-                                long sectorNumber)
-    {
-        // Step 1: Build tweak — encrypt sector number with tweak key
-        byte[] tweakPlain = new byte[BlockSize];
-        // Sector number as little-endian 64-bit in a 128-bit block
-        for (int i = 0; i < 8; i++)
-            tweakPlain[i] = (byte)(sectorNumber >> (i * 8));
-
-        byte[] tweak = AesEcbEncryptBlock(_tweakKey, tweakPlain);
-
-        // Step 2: Process each 16-byte block
-        int blocksPerSector = SectorSize / BlockSize;
-        byte[] block = new byte[BlockSize];
-
-        for (int j = 0; j < blocksPerSector; j++)
+        public void Dispose()
         {
-            int off = inputOffset + j * BlockSize;
-
-            // XOR ciphertext with tweak
-            for (int k = 0; k < BlockSize; k++)
-                block[k] = (byte)(input[off + k] ^ tweak[k]);
-
-            // AES-ECB decrypt
-            byte[] decrypted = AesEcbDecryptBlock(_dataKey, block);
-
-            // XOR with tweak again
-            int outOff = outputOffset + j * BlockSize;
-            for (int k = 0; k < BlockSize; k++)
-                output[outOff + k] = (byte)(decrypted[k] ^ tweak[k]);
-
-            // Advance tweak: multiply by alpha in GF(2^128)
-            GfMul(tweak);
+            DataAes.Dispose();
+            TweakAes.Dispose();
         }
     }
 
@@ -91,70 +66,150 @@ public sealed class AesXts128 : IDisposable
             throw new ArgumentException($"Length must be a multiple of {SectorSize}.");
 
         byte[] ciphertext = new byte[plaintext.Length];
-        int sectorCount = plaintext.Length / SectorSize;
-
-        for (int i = 0; i < sectorCount; i++)
-        {
-            EncryptSector(plaintext, i * SectorSize, ciphertext, i * SectorSize,
-                          startSectorNumber + i);
-        }
-
+        ProcessAll(plaintext, ciphertext, startSectorNumber, encrypt: true);
         return ciphertext;
     }
 
-    private void EncryptSector(byte[] input, int inputOffset, byte[] output, int outputOffset,
-                                long sectorNumber)
+    public byte[] DecryptSectors(byte[] ciphertext, long startSectorNumber)
     {
-        byte[] tweakPlain = new byte[BlockSize];
-        for (int i = 0; i < 8; i++)
-            tweakPlain[i] = (byte)(sectorNumber >> (i * 8));
+        if (ciphertext.Length % SectorSize != 0)
+            throw new ArgumentException($"Length must be a multiple of {SectorSize}.");
 
-        byte[] tweak = AesEcbEncryptBlock(_tweakKey, tweakPlain);
+        byte[] plaintext = new byte[ciphertext.Length];
+        ProcessAll(ciphertext, plaintext, startSectorNumber, encrypt: false);
+        return plaintext;
+    }
 
-        int blocksPerSector = SectorSize / BlockSize;
-        byte[] block = new byte[BlockSize];
+    public void EncryptSectorsInto(byte[] plaintext, byte[] ciphertext, long startSectorNumber)
+        => EncryptSectorsInto(plaintext, (Span<byte>)ciphertext, startSectorNumber);
 
-        for (int j = 0; j < blocksPerSector; j++)
+    public void DecryptSectorsInto(byte[] ciphertext, byte[] plaintext, long startSectorNumber)
+        => DecryptSectorsInto(ciphertext, (Span<byte>)plaintext, startSectorNumber);
+
+    public void EncryptSectorsInto(byte[] plaintext, Span<byte> ciphertext, long startSectorNumber)
+    {
+        if (plaintext.Length % SectorSize != 0)
+            throw new ArgumentException($"Length must be a multiple of {SectorSize}.");
+        if (ciphertext.Length < plaintext.Length)
+            throw new ArgumentException("Output buffer too small.", nameof(ciphertext));
+
+        ProcessAll(plaintext, ciphertext.Slice(0, plaintext.Length), startSectorNumber, encrypt: true);
+    }
+
+    public void DecryptSectorsInto(byte[] ciphertext, Span<byte> plaintext, long startSectorNumber)
+    {
+        if (ciphertext.Length % SectorSize != 0)
+            throw new ArgumentException($"Length must be a multiple of {SectorSize}.");
+        if (plaintext.Length < ciphertext.Length)
+            throw new ArgumentException("Output buffer too small.", nameof(plaintext));
+
+        ProcessAll(ciphertext, plaintext.Slice(0, ciphertext.Length), startSectorNumber, encrypt: false);
+    }
+
+    private unsafe void ProcessAll(byte[] input, Span<byte> output, long startSector, bool encrypt)
+    {
+        int sectorCount = input.Length / SectorSize;
+
+        if (sectorCount < 64)
         {
-            int off = inputOffset + j * BlockSize;
+            using var ctx = new ThreadCtx(_dataKey, _tweakKey);
+            ProcessSectorRange(ctx, input, output, startSector, 0, sectorCount, encrypt);
+            return;
+        }
 
-            for (int k = 0; k < BlockSize; k++)
-                block[k] = (byte)(input[off + k] ^ tweak[k]);
+        int threadCount = Math.Min(Environment.ProcessorCount, sectorCount / 32);
+        if (threadCount < 2) threadCount = 2;
+        int sectorsPerThread = sectorCount / threadCount;
 
-            byte[] encrypted = AesEcbEncryptBlock(_dataKey, block);
-
-            int outOff = outputOffset + j * BlockSize;
-            for (int k = 0; k < BlockSize; k++)
-                output[outOff + k] = (byte)(encrypted[k] ^ tweak[k]);
-
-            GfMul(tweak);
+        fixed (byte* outPtr = output)
+        {
+            IntPtr captured = (IntPtr)outPtr;
+            int outLen = output.Length;
+            Parallel.For(0, threadCount,
+                () => new ThreadCtx(_dataKey, _tweakKey),
+                (thread, _, ctx) =>
+                {
+                    int startS = thread * sectorsPerThread;
+                    int endS = (thread == threadCount - 1) ? sectorCount : startS + sectorsPerThread;
+                    Span<byte> outSpan = new Span<byte>((void*)captured, outLen);
+                    ProcessSectorRange(ctx, input, outSpan, startSector, startS, endS, encrypt);
+                    return ctx;
+                },
+                ctx => ctx.Dispose());
         }
     }
 
-    /// <summary>
-    /// AES-ECB encrypt a single 16-byte block. Fresh transform each call.
-    /// </summary>
-    private static byte[] AesEcbEncryptBlock(byte[] key, byte[] block)
+    private static void ProcessSectorRange(ThreadCtx ctx, byte[] input, Span<byte> output,
+        long startSector, int firstSector, int endSector, bool encrypt)
     {
-        using var aes = Aes.Create();
-        aes.Key = key;
-        aes.Mode = CipherMode.ECB;
-        aes.Padding = PaddingMode.None;
-        using var enc = aes.CreateEncryptor();
-        return enc.TransformFinalBlock(block, 0, BlockSize);
+        Span<byte> tweaks = stackalloc byte[SectorSize];
+        Span<byte> work = stackalloc byte[SectorSize];
+        Span<byte> tweakPlain = stackalloc byte[BlockSize];
+
+        for (int s = firstSector; s < endSector; s++)
+        {
+            long sectorNumber = startSector + s;
+            ReadOnlySpan<byte> srcSector = input.AsSpan(s * SectorSize, SectorSize);
+            Span<byte> dstSector = output.Slice(s * SectorSize, SectorSize);
+
+            // T_0 = aes-ecb(tweakKey, LE(sector_num))
+            tweakPlain.Clear();
+            BinaryPrimitives.WriteInt64LittleEndian(tweakPlain, sectorNumber);
+            ctx.TweakAes.EncryptEcb(tweakPlain, tweaks.Slice(0, BlockSize), PaddingMode.None);
+
+            // T_j = T_{j-1} * alpha for j = 1..31
+            for (int j = 1; j < BlocksPerSector; j++)
+            {
+                Span<byte> prev = tweaks.Slice((j - 1) * BlockSize, BlockSize);
+                Span<byte> cur = tweaks.Slice(j * BlockSize, BlockSize);
+                prev.CopyTo(cur);
+                GfMulAlpha(cur);
+            }
+
+            // work = src xor tweaks
+            XorBlocks(srcSector, tweaks, work);
+
+            // dst = aes-ecb(dataKey, work)
+            if (encrypt)
+                ctx.DataAes.EncryptEcb(work, dstSector, PaddingMode.None);
+            else
+                ctx.DataAes.DecryptEcb(work, dstSector, PaddingMode.None);
+
+            // dst ^= tweaks
+            XorBlocksInPlace(dstSector, tweaks);
+        }
     }
 
-    /// <summary>
-    /// AES-ECB decrypt a single 16-byte block. Fresh transform each call.
-    /// </summary>
-    private static byte[] AesEcbDecryptBlock(byte[] key, byte[] block)
+    private static void XorBlocks(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b, Span<byte> dst)
     {
-        using var aes = Aes.Create();
-        aes.Key = key;
-        aes.Mode = CipherMode.ECB;
-        aes.Padding = PaddingMode.None;
-        using var dec = aes.CreateDecryptor();
-        return dec.TransformFinalBlock(block, 0, BlockSize);
+        int i = 0;
+        if (Vector128.IsHardwareAccelerated)
+        {
+            int simdEnd = a.Length - (a.Length % 16);
+            for (; i < simdEnd; i += 16)
+            {
+                var va = Vector128.Create<byte>(a.Slice(i, 16));
+                var vb = Vector128.Create<byte>(b.Slice(i, 16));
+                (va ^ vb).CopyTo(dst.Slice(i, 16));
+            }
+        }
+        for (; i < a.Length; i++) dst[i] = (byte)(a[i] ^ b[i]);
+    }
+
+    private static void XorBlocksInPlace(Span<byte> dst, ReadOnlySpan<byte> b)
+    {
+        int i = 0;
+        if (Vector128.IsHardwareAccelerated)
+        {
+            int simdEnd = dst.Length - (dst.Length % 16);
+            for (; i < simdEnd; i += 16)
+            {
+                var vd = Vector128.Create<byte>(dst.Slice(i, 16));
+                var vb = Vector128.Create<byte>(b.Slice(i, 16));
+                (vd ^ vb).CopyTo(dst.Slice(i, 16));
+            }
+        }
+        for (; i < dst.Length; i++) dst[i] ^= b[i];
     }
 
     /// <summary>
@@ -162,7 +217,7 @@ public sealed class AesXts128 : IDisposable
     /// Left-shift the 128-bit value by 1 bit; if the high bit was set,
     /// XOR with the reduction polynomial 0x87.
     /// </summary>
-    private static void GfMul(byte[] tweak)
+    private static void GfMulAlpha(Span<byte> tweak)
     {
         byte carry = 0;
         for (int i = 0; i < BlockSize; i++)
@@ -176,37 +231,29 @@ public sealed class AesXts128 : IDisposable
     }
 
     /// <summary>
-    /// Verify the implementation with a known test vector.
-    /// IEEE 1619-2007 test vector #1 (all-zero key, sector 0).
+    /// Verify the implementation with IEEE 1619-2007 test vector #1
+    /// (all-zero keys, sector 0, all zero plaintext) and a round trip.
     /// </summary>
     public static bool SelfTest()
     {
-        // IEEE 1619 vector 1: keys all zero, sector 0, plaintext all zero
-        // Expected ciphertext first 16 bytes: 917cf69ebd68b2ec 9b9fe9a3eadda692
         byte[] dataKey = new byte[16];
         byte[] tweakKey = new byte[16];
-        byte[] plaintext = new byte[512]; // all zeros
+        byte[] plaintext = new byte[512];
 
         using var xts = new AesXts128(dataKey, tweakKey);
         byte[] ct = xts.EncryptSectors(plaintext, 0);
 
-        // Check first 16 bytes of ciphertext
         byte[] expected = {
             0x91, 0x7c, 0xf6, 0x9e, 0xbd, 0x68, 0xb2, 0xec,
             0x9b, 0x9f, 0xe9, 0xa3, 0xea, 0xdd, 0xa6, 0x92
         };
 
         for (int i = 0; i < 16; i++)
-        {
             if (ct[i] != expected[i]) return false;
-        }
 
-        // Verify round-trip
         byte[] pt = xts.DecryptSectors(ct, 0);
         for (int i = 0; i < 512; i++)
-        {
             if (pt[i] != 0) return false;
-        }
 
         return true;
     }

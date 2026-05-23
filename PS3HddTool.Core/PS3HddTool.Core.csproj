@@ -7,6 +7,7 @@
     <RootNamespace>PS3HddTool.Core</RootNamespace>
     <AssemblyName>PS3HddTool.Core</AssemblyName>
     <Description>Core library for PS3 HDD decryption and UFS2 filesystem parsing</Description>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
 </Project>
