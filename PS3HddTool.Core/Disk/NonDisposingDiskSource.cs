@@ -21,6 +21,7 @@ public sealed class NonDisposingDiskSource : IDiskSource
     public bool CanWrite => _inner.CanWrite;
     public void WriteSectors(long startSector, byte[] data) => _inner.WriteSectors(startSector, data);
     public void WriteBytes(long offset, byte[] data) => _inner.WriteBytes(offset, data);
+    public void WriteBytes(long offset, ReadOnlySpan<byte> data) => _inner.WriteBytes(offset, data);
 
     // Intentionally does NOT dispose the inner source
     public void Dispose() { }

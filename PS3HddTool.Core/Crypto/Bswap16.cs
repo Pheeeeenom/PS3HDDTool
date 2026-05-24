@@ -16,20 +16,7 @@ public static class Bswap16
     /// Byte-swap every 16-bit half-word in the buffer (in-place).
     /// For each pair of bytes [A, B], swap to [B, A].
     /// </summary>
-    public static void SwapInPlace(byte[] data)
-    {
-        var span = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(data.AsSpan());
-        for (int k = 0; k < span.Length; k++)
-        {
-            ulong v = span[k];
-            span[k] = ((v & 0x00FF00FF00FF00FFUL) << 8) | ((v >> 8) & 0x00FF00FF00FF00FFUL);
-        }
-        int i = span.Length * 8;
-        for (; i < data.Length - 1; i += 2)
-        {
-            (data[i], data[i + 1]) = (data[i + 1], data[i]);
-        }
-    }
+    public static void SwapInPlace(byte[] data) => SwapInPlace(data.AsSpan());
 
     /// <summary>
     /// Byte-swap every 16-bit half-word, returning a new array.
@@ -47,10 +34,18 @@ public static class Bswap16
 
     /// <summary>
     /// Byte-swap within a Span (in-place).
+    /// swar via 64 bit lanes for the bulk of the buffer, scalar tail for any odd remainder
     /// </summary>
     public static void SwapInPlace(Span<byte> data)
     {
-        for (int i = 0; i < data.Length - 1; i += 2)
+        var longs = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(data);
+        for (int k = 0; k < longs.Length; k++)
+        {
+            ulong v = longs[k];
+            longs[k] = ((v & 0x00FF00FF00FF00FFUL) << 8) | ((v >> 8) & 0x00FF00FF00FF00FFUL);
+        }
+        int i = longs.Length * 8;
+        for (; i < data.Length - 1; i += 2)
         {
             (data[i], data[i + 1]) = (data[i + 1], data[i]);
         }

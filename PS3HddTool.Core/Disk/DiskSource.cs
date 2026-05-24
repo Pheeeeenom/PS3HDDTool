@@ -17,6 +17,7 @@ public interface IDiskSource : IDisposable
 
     /// <summary>Write raw bytes at an arbitrary offset (must be sector-aligned for physical disks).</summary>
     void WriteBytes(long offset, byte[] data);
+    void WriteBytes(long offset, ReadOnlySpan<byte> data);
 
     /// <summary>Whether this source supports writing.</summary>
     bool CanWrite { get; }
@@ -76,12 +77,14 @@ public sealed class ImageDiskSource : IDiskSource
         WriteBytes(startSector * SectorSize, data);
     }
 
-    public void WriteBytes(long offset, byte[] data)
+    public void WriteBytes(long offset, byte[] data) => WriteBytes(offset, (ReadOnlySpan<byte>)data);
+
+    public void WriteBytes(long offset, ReadOnlySpan<byte> data)
     {
         lock (_lock)
         {
             _stream.Seek(offset, SeekOrigin.Begin);
-            _stream.Write(data, 0, data.Length);
+            _stream.Write(data);
             _stream.Flush();
         }
     }
@@ -111,8 +114,14 @@ public sealed class ImageDiskSource : IDiskSource
 public sealed class PhysicalDiskSource : IDiskSource
 {
     private readonly FileStream _stream;
+    private readonly FileStream? _writeStream;
+
     private readonly object _lock = new();
     private readonly bool _writable;
+
+    private IntPtr _alignedWriteBuf = IntPtr.Zero;
+    private int _alignedWriteBufSize = 0;
+    private const int Alignment = 4096;
 
     public long TotalSize { get; }
     public int SectorSize => 512;
@@ -120,15 +129,65 @@ public sealed class PhysicalDiskSource : IDiskSource
     public string Description { get; }
     public bool CanWrite => _writable;
 
+    public bool UnbufferedHandleOpen => _writeStream != null;
+    public string UnbufferedHandleStatus { get; private set; } = "not requested";
+    public long UnbufferedBytesWritten { get; private set; }
+    public long UnbufferedWriteMs { get; private set; }
+    public long BufferedBytesWritten { get; private set; }
+    public long BufferedWriteMs { get; private set; }
+
     public PhysicalDiskSource(string devicePath, long diskSize, bool writable = false)
     {
         _writable = writable;
         var access = writable ? FileAccess.ReadWrite : FileAccess.Read;
-        _stream = new FileStream(devicePath, FileMode.Open, access, FileShare.None,
-            512, FileOptions.None);
+        _stream = new FileStream(devicePath, FileMode.Open, access, FileShare.ReadWrite, 65536, FileOptions.SequentialScan);
+
+        if (writable && OperatingSystem.IsWindows())
+        {
+            const uint GENERIC_WRITE       = 0x40000000;
+            const uint FILE_SHARE_READ     = 0x00000001;
+            const uint FILE_SHARE_WRITE    = 0x00000002;
+            const uint OPEN_EXISTING       = 3;
+            const uint FILE_FLAG_NO_BUFFERING = 0x20000000;
+
+            var handle = CreateFileSafe(devicePath, GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING,
+                FILE_FLAG_NO_BUFFERING, IntPtr.Zero);
+
+            if (handle.IsInvalid)
+            {
+                int err = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                handle.Dispose();
+                UnbufferedHandleStatus = $"CreateFileW failed {err})";
+            }
+            else
+            {
+                try
+                {
+                    _writeStream = new FileStream(handle, FileAccess.Write, 4096);
+                    UnbufferedHandleStatus = "open (FILE_FLAG_NO_BUFFERING)";
+                }
+                catch (Exception ex)
+                {
+                    handle.Dispose();
+                    UnbufferedHandleStatus = $"FileStream wrap failed: {ex.Message}";
+                }
+            }
+        }
+        else if (writable)
+        {
+            UnbufferedHandleStatus = "non-Windows: not attempted";
+        }
+
         TotalSize = diskSize > 0 ? diskSize : DetectDiskSize(_stream);
         Description = $"Physical: {devicePath} ({FormatSize(TotalSize)})";
     }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "CreateFileW",
+        SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileSafe(
+        string lpFileName, uint dwDesiredAccess, uint dwShareMode, IntPtr lpSecurityAttributes,
+        uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
 
     public byte[] ReadSectors(long startSector, int count)
     {
@@ -241,31 +300,79 @@ public sealed class PhysicalDiskSource : IDiskSource
     }
 
     public void WriteSectors(long startSector, byte[] data)
-    {
-        if (!_writable) throw new InvalidOperationException("Disk opened read-only.");
-        if (data.Length % SectorSize != 0) throw new ArgumentException("Data must be sector-aligned.");
-        lock (_lock)
-        {
-            _stream.Position = startSector * SectorSize;
-            _stream.Write(data, 0, data.Length);
-            _stream.Flush();
-        }
-    }
+        => WriteBytes(startSector * SectorSize, data);
 
     public void WriteBytes(long offset, byte[] data)
+        => WriteBytes(offset, (ReadOnlySpan<byte>)data);
+
+    public unsafe void WriteBytes(long offset, ReadOnlySpan<byte> data)
     {
         if (!_writable) throw new InvalidOperationException("Disk opened read-only.");
         if (offset % SectorSize != 0 || data.Length % SectorSize != 0)
             throw new ArgumentException("Physical disk writes must be sector-aligned.");
+
         lock (_lock)
         {
-            _stream.Position = offset;
-            _stream.Write(data, 0, data.Length);
-            _stream.Flush();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bool unbufferedEligible = _writeStream != null
+                && offset % Alignment == 0
+                && data.Length % Alignment == 0;
+
+            if (unbufferedEligible)
+            {
+                fixed (byte* ptr = data)
+                {
+                    bool ptrAligned = ((nint)ptr % Alignment) == 0;
+                    if (ptrAligned)
+                    {
+                        _writeStream!.Position = offset;
+                        _writeStream.Write(data);
+                    }
+                    else
+                    {
+                        EnsureAlignedScratch(data.Length);
+                        Buffer.MemoryCopy(ptr, (void*)_alignedWriteBuf, _alignedWriteBufSize, data.Length);
+                        _writeStream!.Position = offset;
+                        _writeStream.Write(new ReadOnlySpan<byte>((void*)_alignedWriteBuf, data.Length));
+                    }
+                }
+                sw.Stop();
+                UnbufferedBytesWritten += data.Length;
+                UnbufferedWriteMs += sw.ElapsedMilliseconds;
+            }
+            else
+            {
+                _stream.Position = offset;
+                _stream.Write(data);
+                sw.Stop();
+                BufferedBytesWritten += data.Length;
+                BufferedWriteMs += sw.ElapsedMilliseconds;
+            }
         }
     }
 
-    public void Dispose() => _stream.Dispose();
+    private unsafe void EnsureAlignedScratch(int size)
+    {
+        if (_alignedWriteBuf == IntPtr.Zero || _alignedWriteBufSize < size)
+        {
+            if (_alignedWriteBuf != IntPtr.Zero)
+                System.Runtime.InteropServices.NativeMemory.AlignedFree((void*)_alignedWriteBuf);
+            _alignedWriteBuf = (IntPtr)System.Runtime.InteropServices.NativeMemory.AlignedAlloc(
+                (nuint)size, (nuint)Alignment);
+            _alignedWriteBufSize = size;
+        }
+    }
+
+    public void Dispose()
+    {
+        _stream.Dispose();
+        _writeStream?.Dispose();
+        if (_alignedWriteBuf != IntPtr.Zero)
+        {
+            unsafe { System.Runtime.InteropServices.NativeMemory.AlignedFree((void*)_alignedWriteBuf); }
+            _alignedWriteBuf = IntPtr.Zero;
+        }
+    }
 
     /// <summary>
     /// Detect logical and physical sector sizes for a drive.

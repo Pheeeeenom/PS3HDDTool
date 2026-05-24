@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using PS3HddTool.Core.Crypto;
 
 namespace PS3HddTool.Core.Disk;
@@ -6,16 +7,22 @@ namespace PS3HddTool.Core.Disk;
 /// A disk source wrapper that transparently decrypts sectors on read.
 /// Wraps an encrypted IDiskSource and returns decrypted data.
 /// </summary>
-public sealed class DecryptedDiskSource : IDiskSource
+public sealed class DecryptedDiskSource : IDiskSource, IPipelinedDiskSource
 {
     private readonly IDiskSource _source;
     private readonly AesXts128 _cipher;
     private readonly bool _applyBswap16;
 
+    private IntPtr _alignedScratch = IntPtr.Zero;
+    private int _alignedScratchSize = 0;
+    private const int Alignment = 4096;
+
     public long TotalSize => _source.TotalSize;
     public int SectorSize => _source.SectorSize;
     public long SectorCount => _source.SectorCount;
     public string Description => $"Decrypted: {_source.Description}";
+
+    public IDiskSource RawSource => _source;
 
     public DecryptedDiskSource(
         IDiskSource source,
@@ -52,33 +59,80 @@ public sealed class DecryptedDiskSource : IDiskSource
     }
 
     public bool CanWrite => _source.CanWrite;
-    
-    public void WriteSectors(long startSector, byte[] plaintext)
+
+    public unsafe void WriteSectors(long startSector, byte[] plaintext)
     {
         if (plaintext.Length % SectorSize != 0)
             throw new ArgumentException("Data must be sector-aligned.");
 
-        // Encrypt: plaintext → XTS encrypt → bswap16 (reverse of read path)
-        byte[] encrypted = _cipher.EncryptSectors(plaintext, startSector);
+        EnsureAlignedScratch(plaintext.Length);
+        Span<byte> dst = new Span<byte>((void*)_alignedScratch, plaintext.Length);
 
+        // plaintext → XTS encrypt → bswap16 all into the aligned scratch
+        _cipher.EncryptSectorsInto(plaintext, dst, startSector);
         if (_applyBswap16)
-            Bswap16.SwapInPlace(encrypted);
+            Bswap16.SwapInPlace(dst);
 
-        _source.WriteSectors(startSector, encrypted);
+        _source.WriteBytes(startSector * SectorSize, (ReadOnlySpan<byte>)dst);
     }
 
     public void WriteBytes(long offset, byte[] data)
     {
         if (offset % SectorSize != 0 || data.Length % SectorSize != 0)
             throw new ArgumentException("Encrypted writes must be sector-aligned.");
-
-        long startSector = offset / SectorSize;
-        WriteSectors(startSector, data);
+        WriteSectors(offset / SectorSize, data);
     }
 
-    public void Dispose()
+    public void WriteBytes(long offset, ReadOnlySpan<byte> data)
+    {
+        WriteBytes(offset, data.ToArray());
+    }
+
+    public void EncryptForWrite(byte[] plaintext, int byteCount, long offset, Span<byte> ciphertext)
+    {
+        if (byteCount % SectorSize != 0)
+            throw new ArgumentException("Byte count must be sector aligned.");
+        if (offset % SectorSize != 0)
+            throw new ArgumentException("Offset must be sector aligned.");
+        if (ciphertext.Length < byteCount)
+            throw new ArgumentException("Output span too small.", nameof(ciphertext));
+
+        long startSector = offset / SectorSize;
+
+        if (byteCount == plaintext.Length)
+        {
+            _cipher.EncryptSectorsInto(plaintext, ciphertext, startSector);
+        }
+        else
+        {
+            byte[] sized = new byte[byteCount];
+            Buffer.BlockCopy(plaintext, 0, sized, 0, byteCount);
+            _cipher.EncryptSectorsInto(sized, ciphertext, startSector);
+        }
+
+        if (_applyBswap16)
+            Bswap16.SwapInPlace(ciphertext.Slice(0, byteCount));
+    }
+
+    private unsafe void EnsureAlignedScratch(int size)
+    {
+        if (_alignedScratch == IntPtr.Zero || _alignedScratchSize < size)
+        {
+            if (_alignedScratch != IntPtr.Zero)
+                NativeMemory.AlignedFree((void*)_alignedScratch);
+            _alignedScratch = (IntPtr)NativeMemory.AlignedAlloc((nuint)size, Alignment);
+            _alignedScratchSize = size;
+        }
+    }
+
+    public unsafe void Dispose()
     {
         _cipher.Dispose();
         _source.Dispose();
+        if (_alignedScratch != IntPtr.Zero)
+        {
+            NativeMemory.AlignedFree((void*)_alignedScratch);
+            _alignedScratch = IntPtr.Zero;
+        }
     }
 }

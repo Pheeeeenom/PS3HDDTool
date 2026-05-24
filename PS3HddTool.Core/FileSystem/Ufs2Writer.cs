@@ -18,6 +18,8 @@ public class Ufs2Writer
 {
     private readonly Ufs2FileSystem _fs;
     private readonly IDiskSource _disk;
+    private readonly PS3HddTool.Core.Disk.IPipelinedDiskSource? _pipelinedDisk;
+    private readonly IDiskSource _writeTarget;   // RawSource if pipelined, else use _disk
     private readonly long _partitionOffset;
     private readonly bool _dryRun;
     private readonly Action<string> _log;
@@ -55,12 +57,19 @@ public class Ufs2Writer
     private int _batchBlockCount = 0;
     private int _batchCg = -1;
     private Task? _pendingWrite;
-    
+
+    // three stage pipeline (used when _pipelinedDisk != null): main thread reads source and encrypts while a worker writes the previous batch's encrypted bytes
+    // two 4k aligned native ciphertext buffers ping pong between encrypt and write so encrypt(N+1) overlaps write(N) w/o contending for the same memory - sage
+    private IntPtr[]? _encPingPongPtr;    
+    private int _encPingPongCapacity = 0;
+    private int _encActiveBuf = 0;
+    private readonly Task?[] _writeTaskPerEncSlot = new Task?[2];
+
     // Batch block allocation — avoids per-block bitmap scanning for large files
     private long _batchAllocNextFrag = -1;
     private int _batchAllocRemaining = 0;
     private int _batchAllocCg = -1;
-    
+
     private void EnsureBatchBuffers(int blockSize)
     {
         if (_pingPong == null || _pingPong[0].Length != blockSize * MAX_BATCH)
@@ -70,13 +79,64 @@ public class Ufs2Writer
             _pingPong[1] = new byte[blockSize * MAX_BATCH];
         }
     }
-    
+
+    private unsafe void EnsureEncBuffers(int blockSize)
+    {
+        int needed = blockSize * MAX_BATCH;
+        if (_encPingPongPtr == null || _encPingPongCapacity < needed)
+        {
+            if (_encPingPongPtr != null)
+            {
+                for (int i = 0; i < 2; i++)
+                    if (_encPingPongPtr[i] != IntPtr.Zero)
+                        System.Runtime.InteropServices.NativeMemory.AlignedFree((void*)_encPingPongPtr[i]);
+            }
+            _encPingPongPtr = new IntPtr[2];
+            _encPingPongPtr[0] = (IntPtr)System.Runtime.InteropServices.NativeMemory.AlignedAlloc((nuint)needed, 4096);
+            _encPingPongPtr[1] = (IntPtr)System.Runtime.InteropServices.NativeMemory.AlignedAlloc((nuint)needed, 4096);
+            _encPingPongCapacity = needed;
+        }
+    }
+
+    private unsafe Span<byte> EncSpan(int slot, int length)
+        => new Span<byte>((void*)_encPingPongPtr![slot], length);
+
     private void InternalFlushBatch(int blockSize)
     {
         if (_batchBlockCount <= 0) return;
         long offset = _partitionOffset + (_batchStartFrag * _fs.Superblock!.FragmentSize);
         int totalBytes = _batchBlockCount * blockSize;
-        if (!_dryRun)
+        if (_dryRun)
+        {
+            _batchStartFrag = -1;
+            _batchBlockCount = 0;
+            return;
+        }
+
+        if (_pipelinedDisk != null)
+        {
+            EnsureEncBuffers(blockSize);
+            int slot = _encActiveBuf;
+
+            _writeTaskPerEncSlot[slot]?.Wait();
+
+            _pipelinedDisk.EncryptForWrite(_pingPong![_activeBuf], totalBytes, offset, EncSpan(slot, totalBytes));
+
+            _pendingWrite?.Wait();
+
+            long capturedOffset = offset;
+            int capturedBytes = totalBytes;
+            int capturedSlot = slot;
+            _pendingWrite = Task.Run(() =>
+            {
+                _writeTarget.WriteBytes(capturedOffset, EncSpan(capturedSlot, capturedBytes));
+            });
+            _writeTaskPerEncSlot[slot] = _pendingWrite;
+
+            _activeBuf = 1 - _activeBuf;
+            _encActiveBuf = 1 - _encActiveBuf;
+        }
+        else
         {
             _pendingWrite?.Wait();
             
@@ -91,7 +151,6 @@ public class Ufs2Writer
             
             long capturedOffset = offset;
             _pendingWrite = Task.Run(() => _disk.WriteBytes(capturedOffset, writeData));
-            
             _activeBuf = 1 - _activeBuf;
         }
         _batchStartFrag = -1;
@@ -109,7 +168,11 @@ public class Ufs2Writer
             int blockSize = (int)_fs.Superblock!.BlockSize;
             InternalFlushBatch(blockSize);
             _pendingWrite?.Wait();
+            _writeTaskPerEncSlot[0]?.Wait();
+            _writeTaskPerEncSlot[1]?.Wait();
             _pendingWrite = null;
+            _writeTaskPerEncSlot[0] = null;
+            _writeTaskPerEncSlot[1] = null;
         }
     }
 
@@ -138,6 +201,22 @@ public class Ufs2Writer
         _partitionOffset = partitionOffsetBytes;
         _dryRun = dryRun;
         _log = log;
+        _pipelinedDisk = disk as PS3HddTool.Core.Disk.IPipelinedDiskSource;
+        _writeTarget = _pipelinedDisk?.RawSource ?? disk;
+    }
+
+    ~Ufs2Writer()
+    {
+        unsafe
+        {
+            if (_encPingPongPtr != null)
+            {
+                for (int i = 0; i < 2; i++)
+                    if (_encPingPongPtr[i] != IntPtr.Zero)
+                        System.Runtime.InteropServices.NativeMemory.AlignedFree((void*)_encPingPongPtr[i]);
+                _encPingPongPtr = null;
+            }
+        }
     }
 
     /// <summary>
@@ -1411,18 +1490,13 @@ public class Ufs2Writer
         int flushCount = 0;
         long totalFlushedBytes = 0;
 
-        void FlushBatch()
+        void FlushBatch(bool wait = true)
         {
             if (_batchBlockCount <= 0) return;
             swFlush.Start();
             int flushedBlocks = _batchBlockCount;
             InternalFlushBatch(blockSize);
-            // BUG FIX #23: Must wait for async batch write to complete before any
-            // synchronous metadata writes (WriteDataBlock, WriteCylinderGroup) that
-            // follow. Without this wait, the async batch write and sync metadata write
-            // race on the same disk handle, corrupting data in large files that use
-            // double indirect blocks (>33MB).
-            _pendingWrite?.Wait();
+            if (wait) _pendingWrite?.Wait();
             totalFlushedBytes += flushedBlocks * blockSize;
             flushCount++;
             swFlush.Stop();
@@ -1561,7 +1635,7 @@ public class Ufs2Writer
                                   _batchBlockCount < MAX_BATCH);
 
             if (!isSequential && _batchBlockCount > 0)
-                FlushBatch();
+                FlushBatch(wait: false);
 
             if (_batchBlockCount == 0)
             {
