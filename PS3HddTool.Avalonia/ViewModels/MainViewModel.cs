@@ -2110,7 +2110,7 @@ public partial class MainViewModel : ObservableObject
                     DryRunMode, msg => Log(msg));
                 writer.VerboseLog = VerboseDiagnostics;
 
-                using var fs = new FileStream(sourceFilePath, FileMode.Open, FileAccess.Read);
+                using var fs = new FileStream(sourceFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, FileOptions.SequentialScan);
 
                 // Wrap in a progress-reporting stream
                 var copyStart = DateTime.UtcNow;
@@ -2299,7 +2299,7 @@ public partial class MainViewModel : ObservableObject
                         string relativePath = file.Substring(sourceFolderPath.Length).TrimStart(Path.DirectorySeparatorChar);
                         ProgressText = $"{filesDone + 1}/{totalFiles} — {relativePath}";
 
-                        using var fs = new FileStream(file, FileMode.Open, FileAccess.Read);
+                        using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, FileOptions.SequentialScan);
                         writer.WriteFile(currentInode, fileName, fs, fileSize);
 
                         filesDone++;
@@ -2727,7 +2727,7 @@ public partial class MainViewModel : ObservableObject
                     if (!dirInodes.TryGetValue(parentDir, out long parentInode))
                         parentInode = titleDirInode;
 
-                    using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, 65536);
+                    using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, FileOptions.SequentialScan);
                     writer.WriteFile(parentInode, fileName, fs, fs.Length);
 
                     filesDone++;

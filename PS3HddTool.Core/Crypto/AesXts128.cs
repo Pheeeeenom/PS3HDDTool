@@ -35,10 +35,17 @@ public sealed class AesXts128 : IDisposable
         _tweakKey = (byte[])tweakKey.Clone();
     }
 
+    private const int ChunkSectors = 128;
+
     private sealed class ThreadCtx : IDisposable
     {
         public readonly Aes DataAes;
         public readonly Aes TweakAes;
+
+        public readonly byte[] TweakSeed = new byte[ChunkSectors * BlockSize];
+        public readonly byte[] T0 = new byte[ChunkSectors * BlockSize];
+        public readonly byte[] Tweaks = new byte[ChunkSectors * SectorSize];
+        public readonly byte[] Work = new byte[ChunkSectors * SectorSize];
 
         public ThreadCtx(byte[] dataKey, byte[] tweakKey)
         {
@@ -142,41 +149,46 @@ public sealed class AesXts128 : IDisposable
     private static void ProcessSectorRange(ThreadCtx ctx, byte[] input, Span<byte> output,
         long startSector, int firstSector, int endSector, bool encrypt)
     {
-        Span<byte> tweaks = stackalloc byte[SectorSize];
-        Span<byte> work = stackalloc byte[SectorSize];
-        Span<byte> tweakPlain = stackalloc byte[BlockSize];
-
-        for (int s = firstSector; s < endSector; s++)
+        for (int chunkStart = firstSector; chunkStart < endSector; chunkStart += ChunkSectors)
         {
-            long sectorNumber = startSector + s;
-            ReadOnlySpan<byte> srcSector = input.AsSpan(s * SectorSize, SectorSize);
-            Span<byte> dstSector = output.Slice(s * SectorSize, SectorSize);
+            int n = Math.Min(ChunkSectors, endSector - chunkStart);
+            int chunkBytes = n * SectorSize;
 
-            // T_0 = aes-ecb(tweakKey, LE(sector_num))
-            tweakPlain.Clear();
-            BinaryPrimitives.WriteInt64LittleEndian(tweakPlain, sectorNumber);
-            ctx.TweakAes.EncryptEcb(tweakPlain, tweaks.Slice(0, BlockSize), PaddingMode.None);
+            Span<byte> seed = ctx.TweakSeed.AsSpan(0, n * BlockSize);
+            seed.Clear();
+            for (int s = 0; s < n; s++)
+                BinaryPrimitives.WriteInt64LittleEndian(seed.Slice(s * BlockSize), startSector + chunkStart + s);
+            ctx.TweakAes.EncryptEcb(seed, ctx.T0.AsSpan(0, n * BlockSize), PaddingMode.None);
 
-            // T_j = T_{j-1} * alpha for j = 1..31
-            for (int j = 1; j < BlocksPerSector; j++)
+            Span<byte> tweaks = ctx.Tweaks.AsSpan(0, chunkBytes);
+            for (int s = 0; s < n; s++)
             {
-                Span<byte> prev = tweaks.Slice((j - 1) * BlockSize, BlockSize);
-                Span<byte> cur = tweaks.Slice(j * BlockSize, BlockSize);
-                prev.CopyTo(cur);
-                GfMulAlpha(cur);
+                ulong lo = BinaryPrimitives.ReadUInt64LittleEndian(ctx.T0.AsSpan(s * BlockSize));
+                ulong hi = BinaryPrimitives.ReadUInt64LittleEndian(ctx.T0.AsSpan(s * BlockSize + 8));
+                Span<byte> sectorTweaks = tweaks.Slice(s * SectorSize, SectorSize);
+                BinaryPrimitives.WriteUInt64LittleEndian(sectorTweaks, lo);
+                BinaryPrimitives.WriteUInt64LittleEndian(sectorTweaks.Slice(8), hi);
+                for (int j = 1; j < BlocksPerSector; j++)
+                {
+                    ulong carry = hi >> 63;
+                    hi = (hi << 1) | (lo >> 63);
+                    lo <<= 1;
+                    if (carry != 0) lo ^= 0x87;
+                    BinaryPrimitives.WriteUInt64LittleEndian(sectorTweaks.Slice(j * BlockSize), lo);
+                    BinaryPrimitives.WriteUInt64LittleEndian(sectorTweaks.Slice(j * BlockSize + 8), hi);
+                }
             }
 
-            // work = src xor tweaks
-            XorBlocks(srcSector, tweaks, work);
+            ReadOnlySpan<byte> src = input.AsSpan(chunkStart * SectorSize, chunkBytes);
+            Span<byte> dst = output.Slice(chunkStart * SectorSize, chunkBytes);
+            Span<byte> work = ctx.Work.AsSpan(0, chunkBytes);
 
-            // dst = aes-ecb(dataKey, work)
+            XorBlocks(src, tweaks, work);
             if (encrypt)
-                ctx.DataAes.EncryptEcb(work, dstSector, PaddingMode.None);
+                ctx.DataAes.EncryptEcb(work, dst, PaddingMode.None);
             else
-                ctx.DataAes.DecryptEcb(work, dstSector, PaddingMode.None);
-
-            // dst ^= tweaks
-            XorBlocksInPlace(dstSector, tweaks);
+                ctx.DataAes.DecryptEcb(work, dst, PaddingMode.None);
+            XorBlocksInPlace(dst, tweaks);
         }
     }
 
@@ -210,24 +222,6 @@ public sealed class AesXts128 : IDisposable
             }
         }
         for (; i < dst.Length; i++) dst[i] ^= b[i];
-    }
-
-    /// <summary>
-    /// GF(2^128) multiply by alpha (x). 
-    /// Left-shift the 128-bit value by 1 bit; if the high bit was set,
-    /// XOR with the reduction polynomial 0x87.
-    /// </summary>
-    private static void GfMulAlpha(Span<byte> tweak)
-    {
-        byte carry = 0;
-        for (int i = 0; i < BlockSize; i++)
-        {
-            byte nextCarry = (byte)((tweak[i] >> 7) & 1);
-            tweak[i] = (byte)((tweak[i] << 1) | carry);
-            carry = nextCarry;
-        }
-        if (carry != 0)
-            tweak[0] ^= 0x87;
     }
 
     /// <summary>

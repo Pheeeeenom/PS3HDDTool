@@ -85,7 +85,6 @@ public sealed class ImageDiskSource : IDiskSource
         {
             _stream.Seek(offset, SeekOrigin.Begin);
             _stream.Write(data);
-            _stream.Flush();
         }
     }
 
@@ -189,12 +188,11 @@ public sealed class PhysicalDiskSource : IDiskSource
         string lpFileName, uint dwDesiredAccess, uint dwShareMode, IntPtr lpSecurityAttributes,
         uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
 
+    private int _maxSectorsPerRead = 8192;
+    private const int MinSectorsPerRead = 128; // 64KB
+
     public byte[] ReadSectors(long startSector, int count)
     {
-        // Limit read size to avoid Windows physical drive I/O errors
-        // Windows may reject reads larger than ~64KB on some physical drives
-        const int MaxSectorsPerRead = 128; // 64KB
-
         long offset = startSector * SectorSize;
         int totalLength = count * SectorSize;
         byte[] buffer = new byte[totalLength];
@@ -206,7 +204,7 @@ public sealed class PhysicalDiskSource : IDiskSource
 
             while (remaining > 0)
             {
-                int chunk = Math.Min(remaining, MaxSectorsPerRead);
+                int chunk = Math.Min(remaining, _maxSectorsPerRead);
                 int chunkBytes = chunk * SectorSize;
                 long readOffset = offset + bufferOffset;
 
@@ -214,11 +212,19 @@ public sealed class PhysicalDiskSource : IDiskSource
                 _stream.Position = readOffset;
 
                 int totalRead = 0;
-                while (totalRead < chunkBytes)
+                try
                 {
-                    int read = _stream.Read(buffer, bufferOffset + totalRead, chunkBytes - totalRead);
-                    if (read == 0) break;
-                    totalRead += read;
+                    while (totalRead < chunkBytes)
+                    {
+                        int read = _stream.Read(buffer, bufferOffset + totalRead, chunkBytes - totalRead);
+                        if (read == 0) break;
+                        totalRead += read;
+                    }
+                }
+                catch (IOException) when (chunk > MinSectorsPerRead)
+                {
+                    _maxSectorsPerRead = Math.Max(MinSectorsPerRead, chunk / 2);
+                    continue; // retry this chunk at the smaller size
                 }
 
                 bufferOffset += chunkBytes;

@@ -58,12 +58,14 @@ public class Ufs2Writer
     private int _batchCg = -1;
     private Task? _pendingWrite;
 
-    // three stage pipeline (used when _pipelinedDisk != null): main thread reads source and encrypts while a worker writes the previous batch's encrypted bytes
+    // three stage pipeline (used when _pipelinedDisk != null): main thread only reads source data;
+    // each batch's encrypt+write runs as a chained worker task, so read(N+1) || encrypt(N) || write(N-1)
     // two 4k aligned native ciphertext buffers ping pong between encrypt and write so encrypt(N+1) overlaps write(N) w/o contending for the same memory - sage
-    private IntPtr[]? _encPingPongPtr;    
+    private IntPtr[]? _encPingPongPtr;
     private int _encPingPongCapacity = 0;
     private int _encActiveBuf = 0;
     private readonly Task?[] _writeTaskPerEncSlot = new Task?[2];
+    private readonly Task?[] _ptEncDone = new Task?[2];
 
     // Batch block allocation — avoids per-block bitmap scanning for large files
     private long _batchAllocNextFrag = -1;
@@ -116,25 +118,41 @@ public class Ufs2Writer
         if (_pipelinedDisk != null)
         {
             EnsureEncBuffers(blockSize);
-            int slot = _encActiveBuf;
+            int ptSlot = _activeBuf;
+            int encSlot = _encActiveBuf;
 
-            _writeTaskPerEncSlot[slot]?.Wait();
-
-            _pipelinedDisk.EncryptForWrite(_pingPong![_activeBuf], totalBytes, offset, EncSpan(slot, totalBytes));
-
-            _pendingWrite?.Wait();
+            var encSlotBusy = _writeTaskPerEncSlot[encSlot]; // write that last used this ciphertext buffer
+            var prevChain = _pendingWrite; // previous batch's encrypt+write chain
 
             long capturedOffset = offset;
             int capturedBytes = totalBytes;
-            int capturedSlot = slot;
-            _pendingWrite = Task.Run(() =>
+            var ptFree = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var chain = Task.Run(() =>
             {
-                _writeTarget.WriteBytes(capturedOffset, EncSpan(capturedSlot, capturedBytes));
+                try
+                {
+                    encSlotBusy?.Wait();
+                    _pipelinedDisk.EncryptForWrite(_pingPong![ptSlot], capturedBytes, capturedOffset, EncSpan(encSlot, capturedBytes));
+                    ptFree.SetResult();
+                }
+                catch (Exception ex)
+                {
+                    ptFree.TrySetException(ex);
+                    throw;
+                }
+                prevChain?.Wait();
+                _writeTarget.WriteBytes(capturedOffset, EncSpan(encSlot, capturedBytes));
             });
-            _writeTaskPerEncSlot[slot] = _pendingWrite;
+
+            _pendingWrite = chain;
+            _writeTaskPerEncSlot[encSlot] = chain;
+            _ptEncDone[ptSlot] = ptFree.Task;
 
             _activeBuf = 1 - _activeBuf;
             _encActiveBuf = 1 - _encActiveBuf;
+
+            _ptEncDone[_activeBuf]?.Wait();
         }
         else
         {
@@ -173,6 +191,8 @@ public class Ufs2Writer
             _pendingWrite = null;
             _writeTaskPerEncSlot[0] = null;
             _writeTaskPerEncSlot[1] = null;
+            _ptEncDone[0] = null;
+            _ptEncDone[1] = null;
         }
     }
 
@@ -1467,6 +1487,8 @@ public class Ufs2Writer
         byte[]? doubleIndirectBuf = null;
         byte[]? currentL1Buf = null;
 
+        var deferredMetaBlocks = new List<(long Addr, byte[] Data)>();
+
         // Write batching: use persistent batch state for cross-file batching
         EnsureBatchBuffers(blockSize);
         
@@ -1707,8 +1729,7 @@ public class Ufs2Writer
                     {
                         if (indirectBlockBuf != null)
                         {
-                            FlushBatch();
-                            WriteDataBlock(indirectBlock, indirectBlockBuf);
+                            deferredMetaBlocks.Add((indirectBlock, indirectBlockBuf));
                             indirectBlockBuf = null;
                         }
                         long diFrag = FindFreeFragments(currentCgInfo, fragsPerBlock);
@@ -1733,10 +1754,7 @@ public class Ufs2Writer
                     if (l2Idx == 0)
                     {
                         if (currentL1Buf != null && _currentL1Block != 0)
-                        {
-                            FlushBatch();
-                            WriteDataBlock(_currentL1Block, currentL1Buf);
-                        }
+                            deferredMetaBlocks.Add((_currentL1Block, currentL1Buf));
 
                         long l1Frag = FindFreeFragments(currentCgInfo, fragsPerBlock);
                         if (l1Frag < 0)
@@ -1778,8 +1796,10 @@ public class Ufs2Writer
             _pendingWrite = null;
         }
 
-        // Write any buffered indirect blocks
         swMeta.Start();
+        deferredMetaBlocks.Sort((a, b) => a.Addr.CompareTo(b.Addr));
+        foreach (var (addr, data) in deferredMetaBlocks)
+            WriteDataBlock(addr, data);
         if (indirectBlockBuf != null)
             WriteDataBlock(indirectBlock, indirectBlockBuf);
         if (currentL1Buf != null && _currentL1Block != 0)
@@ -2175,12 +2195,15 @@ public class Ufs2Writer
         long csSummaryOffset = (csAddr > 0 && csSize > 0) ? _partitionOffset + csAddr * sb.FragmentSize : 0;
         byte[]? csData = (csSummaryOffset > 0) ? _disk.ReadBytes(csSummaryOffset, csSize) : null;
         
+        int cgSize = BinaryPrimitives.ReadInt32BigEndian(_fs.RawSuperblockData.AsSpan(0xA0)); // fs_cgsize
+
         for (int cgi = 0; cgi < sb.CylinderGroups; cgi++)
         {
             long cgOffset = _partitionOffset + (long)cgi * sb.FragsPerGroup * sb.FragmentSize;
             long cgHeaderOffset = cgOffset + (long)cblkno * sb.FragmentSize;
-            byte[] cgHeader = _disk.ReadBytes(cgHeaderOffset, 128);
-            
+
+            byte[] cgHeader = _cgCache.TryGetValue(cgi, out var cachedCg) ? cachedCg.RawData : _disk.ReadBytes(cgHeaderOffset, cgSize);
+
             int magic = BinaryPrimitives.ReadInt32BigEndian(cgHeader.AsSpan(0x04));
             if (magic != 0x00090255)
             {
@@ -2188,26 +2211,28 @@ public class Ufs2Writer
                     Array.Clear(csData, cgi * 16, 16);
                 continue;
             }
-            
+
             int ndir = BinaryPrimitives.ReadInt32BigEndian(cgHeader.AsSpan(0x18));
             int nbfree = BinaryPrimitives.ReadInt32BigEndian(cgHeader.AsSpan(0x1C));
             int nifree = BinaryPrimitives.ReadInt32BigEndian(cgHeader.AsSpan(0x20));
             int nffree = BinaryPrimitives.ReadInt32BigEndian(cgHeader.AsSpan(0x24));
-            
+
             // Count clusters from cluster bitmap
             int clusteroff = BinaryPrimitives.ReadInt32BigEndian(cgHeader.AsSpan(0x6C));
             int nclusterblks = BinaryPrimitives.ReadInt32BigEndian(cgHeader.AsSpan(0x70));
             if (clusteroff > 0 && nclusterblks > 0)
             {
-                // Read the cluster bitmap for this CG
-                byte[] fullCg = _disk.ReadBytes(cgHeaderOffset, clusteroff + (nclusterblks + 7) / 8);
-                for (int b = 0; b < nclusterblks; b++)
-                {
-                    int cbi = clusteroff + (b / 8);
-                    int cbit = b % 8;
-                    if ((fullCg[cbi] & (1 << cbit)) != 0)
-                        totalNclusters++;
-                }
+                int bitmapBytes = (nclusterblks + 7) / 8;
+                byte[] fullCg = (clusteroff + bitmapBytes <= cgHeader.Length) ? cgHeader : _disk.ReadBytes(cgHeaderOffset, clusteroff + bitmapBytes);
+
+                // popcount whole bytes, mask the trailing partial byte
+                int wholeBytes = nclusterblks / 8;
+                for (int cbi = 0; cbi < wholeBytes; cbi++)
+                    totalNclusters += System.Numerics.BitOperations.PopCount(fullCg[clusteroff + cbi]);
+                int tailBits = nclusterblks % 8;
+                if (tailBits > 0)
+                    totalNclusters += System.Numerics.BitOperations.PopCount(
+                        (uint)(fullCg[clusteroff + wholeBytes] & ((1 << tailBits) - 1)));
             }
             
             totalNdir += ndir;
