@@ -2,7 +2,110 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="PS3HddTool.Avalonia.App"
              RequestedThemeVariant="Dark">
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- Workbench theme — warm charcoal, signal-orange accent.          -->
+    <!-- App-level resources override FluentTheme lookups so every       -->
+    <!-- control (including code-built dialogs) picks up the palette.    -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <Application.Resources>
+
+        <!-- Accent: signal orange -->
+        <Color x:Key="SystemAccentColor">#E8842A</Color>
+        <Color x:Key="SystemAccentColorDark1">#C9701F</Color>
+        <Color x:Key="SystemAccentColorDark2">#A85B16</Color>
+        <Color x:Key="SystemAccentColorDark3">#8A4A10</Color>
+        <Color x:Key="SystemAccentColorLight1">#F09740</Color>
+        <Color x:Key="SystemAccentColorLight2">#F5A85C</Color>
+        <Color x:Key="SystemAccentColorLight3">#FABC80</Color>
+
+        <CornerRadius x:Key="ControlCornerRadius">6</CornerRadius>
+
+        <!-- Buttons -->
+        <SolidColorBrush x:Key="ButtonBackground">#1E1D1A</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonForeground">#C9C4B8</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonBorderBrush">#2C2B27</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonBackgroundPointerOver">#262420</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonForegroundPointerOver">#ECE9E2</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonBorderBrushPointerOver">#3A3833</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonBackgroundPressed">#131210</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonForegroundPressed">#C9C4B8</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonBorderBrushPressed">#2C2B27</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonBackgroundDisabled">#1A1916</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonForegroundDisabled">#56534B</SolidColorBrush>
+        <SolidColorBrush x:Key="ButtonBorderBrushDisabled">#242320</SolidColorBrush>
+
+        <!-- Text inputs -->
+        <SolidColorBrush x:Key="TextControlBackground">#121110</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlForeground">#D8D4CA</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlBorderBrush">#2C2B27</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlBackgroundPointerOver">#121110</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlForegroundPointerOver">#ECE9E2</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver">#3A3833</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlBackgroundFocused">#121110</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlForegroundFocused">#ECE9E2</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlBorderBrushFocused">#B96F24</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlPlaceholderForeground">#6B675E</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlPlaceholderForegroundPointerOver">#6B675E</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlPlaceholderForegroundFocused">#6B675E</SolidColorBrush>
+        <SolidColorBrush x:Key="TextControlSelectionHighlightColor">#5C3A14</SolidColorBrush>
+
+        <!-- Tree -->
+        <SolidColorBrush x:Key="TreeViewItemBackgroundPointerOver">#201F1B</SolidColorBrush>
+        <SolidColorBrush x:Key="TreeViewItemForegroundPointerOver">#D8D4CA</SolidColorBrush>
+        <SolidColorBrush x:Key="TreeViewItemBackgroundSelected">#3A2A14</SolidColorBrush>
+        <SolidColorBrush x:Key="TreeViewItemForegroundSelected">#F4D4A6</SolidColorBrush>
+        <SolidColorBrush x:Key="TreeViewItemBackgroundSelectedPointerOver">#44321A</SolidColorBrush>
+        <SolidColorBrush x:Key="TreeViewItemForegroundSelectedPointerOver">#F6DCB4</SolidColorBrush>
+        <SolidColorBrush x:Key="TreeViewItemBackgroundSelectedPressed">#3A2A14</SolidColorBrush>
+        <SolidColorBrush x:Key="TreeViewItemForegroundSelectedPressed">#F4D4A6</SolidColorBrush>
+
+        <!-- Context menus -->
+        <SolidColorBrush x:Key="MenuFlyoutPresenterBackground">#1E1D1A</SolidColorBrush>
+        <SolidColorBrush x:Key="MenuFlyoutPresenterBorderBrush">#2C2B27</SolidColorBrush>
+        <SolidColorBrush x:Key="MenuFlyoutItemForeground">#C9C4B8</SolidColorBrush>
+        <SolidColorBrush x:Key="MenuFlyoutItemBackgroundPointerOver">#2A2824</SolidColorBrush>
+        <SolidColorBrush x:Key="MenuFlyoutItemForegroundPointerOver">#ECE9E2</SolidColorBrush>
+
+        <!-- Combo boxes (drive picker dialog) -->
+        <SolidColorBrush x:Key="ComboBoxBackground">#121110</SolidColorBrush>
+        <SolidColorBrush x:Key="ComboBoxForeground">#D8D4CA</SolidColorBrush>
+        <SolidColorBrush x:Key="ComboBoxBorderBrush">#2C2B27</SolidColorBrush>
+        <SolidColorBrush x:Key="ComboBoxBackgroundPointerOver">#181714</SolidColorBrush>
+        <SolidColorBrush x:Key="ComboBoxDropDownBackground">#1E1D1A</SolidColorBrush>
+
+    </Application.Resources>
+
     <Application.Styles>
         <FluentTheme />
+
+        <!-- Shared button variants (used by MainWindow and code-built dialogs) -->
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="#E8842A"/>
+            <Setter Property="Foreground" Value="#2A1606"/>
+            <Setter Property="BorderBrush" Value="#E8842A"/>
+            <Setter Property="FontWeight" Value="Medium"/>
+        </Style>
+        <Style Selector="Button.primary:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#F09740"/>
+            <Setter Property="Foreground" Value="#2A1606"/>
+            <Setter Property="BorderBrush" Value="#F09740"/>
+        </Style>
+        <Style Selector="Button.primary:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#C9701F"/>
+            <Setter Property="Foreground" Value="#2A1606"/>
+            <Setter Property="BorderBrush" Value="#C9701F"/>
+        </Style>
+
+        <Style Selector="Button.danger">
+            <Setter Property="Background" Value="#241715"/>
+            <Setter Property="Foreground" Value="#E25555"/>
+            <Setter Property="BorderBrush" Value="#45211F"/>
+        </Style>
+        <Style Selector="Button.danger:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#321B19"/>
+            <Setter Property="Foreground" Value="#F07070"/>
+            <Setter Property="BorderBrush" Value="#5A2D2A"/>
+        </Style>
     </Application.Styles>
 </Application>

@@ -13,10 +13,13 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _vm;
 
-    public MainWindow()
+    public MainWindow() : this(new MainViewModel(), new PS3HddTool.Core.EidKeyDatabase()) { }
+
+    public MainWindow(MainViewModel viewModel, PS3HddTool.Core.EidKeyDatabase keyDatabase)
     {
         InitializeComponent();
-        _vm = new MainViewModel();
+        _vm = viewModel;
+        _keyDb = keyDatabase;
         DataContext = _vm;
 
         Closing += (_, _) => _vm.Cleanup();
@@ -52,6 +55,32 @@ public partial class MainWindow : Window
                     await _vm.ExpandNodeAsync(node);
                 }
             }, global::Avalonia.Interactivity.RoutingStrategies.Tunnel);
+
+            // Context actions apply to the item under the pointer, even before a left-click.
+            tree.AddHandler(global::Avalonia.Input.InputElement.PointerPressedEvent, (_, e) =>
+            {
+                if (_vm.IsBusy || !e.GetCurrentPoint(tree).Properties.IsRightButtonPressed) return;
+                var source = e.Source as Control;
+                while (source != null && source is not TreeViewItem)
+                    source = source.Parent as Control;
+                if (source is TreeViewItem item && item.DataContext is FileTreeNode node && node.InodeNumber > 0)
+                    _vm.SelectedNode = node;
+            }, global::Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        }
+
+        var logList = this.FindControl<ListBox>("LogList");
+        if (logList != null)
+        {
+            void ScrollLogToLatest(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs args)
+            {
+                global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                {
+                    if (IsVisible && logList.IsEffectivelyVisible && _vm.LogMessages.Count > 0)
+                        logList.ScrollIntoView(_vm.LogMessages[^1]);
+                });
+            }
+            _vm.LogMessages.CollectionChanged += ScrollLogToLatest;
+            Closed += (_, _) => _vm.LogMessages.CollectionChanged -= ScrollLogToLatest;
         }
     }
 
@@ -140,6 +169,7 @@ public partial class MainWindow : Window
 
     private async void OnDrop(object? sender, DragEventArgs e)
     {
+        if (_vm.IsBusy) return;
         var formats = string.Join(", ", e.Data.GetDataFormats());
         _vm.Log($"Drag-drop received. Formats: [{formats}]");
 
@@ -155,6 +185,21 @@ public partial class MainWindow : Window
 
         // Check if the first file is a key file (legacy drag-drop for EID keys)
         string firstExt = System.IO.Path.GetExtension(paths[0]).ToLowerInvariant();
+        if (_vm.IsPs4)
+        {
+            if (!_vm.IsFilesystemMounted && paths.Count == 1 && firstExt == ".bin")
+            {
+                try
+                {
+                    if (new FileInfo(paths[0]).Length != 32)
+                        throw new InvalidDataException("A PS4 EAP HDD key file must contain exactly 32 bytes.");
+                    _vm.ImportPs4Key(File.ReadAllBytes(paths[0]));
+                }
+                catch (Exception ex) { _vm.StatusText = $"Key import failed: {ex.Message}"; }
+            }
+            else _vm.StatusText = "PS4 disks are read-only. Use Extract to save files to your computer.";
+            return;
+        }
         if ((firstExt == ".bin" || firstExt == ".eid") && !_vm.IsFilesystemMounted)
         {
             // Key file drag-drop (existing behavior)
@@ -242,7 +287,7 @@ public partial class MainWindow : Window
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "Open PS3 HDD Image",
+            Title = "Open PS3 / PS4 HDD Image",
             AllowMultiple = false,
             FileTypeFilter = new[]
             {
@@ -267,7 +312,9 @@ public partial class MainWindow : Window
             Width = 600,
             Height = 260,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            CanResize = false
+            CanResize = false,
+            Background = Wb.WindowBg,
+            Foreground = Wb.Body
         };
 
         var panel = new StackPanel { Margin = new global::Avalonia.Thickness(16), Spacing = 8 };
@@ -336,7 +383,7 @@ public partial class MainWindow : Window
         panel.Children.Add(new TextBlock
         {
             Text = "Or enter path manually:",
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#999")),
+            Foreground = Wb.TextMut,
             FontSize = 12,
             Margin = new global::Avalonia.Thickness(0, 12, 0, 0)
         });
@@ -362,8 +409,7 @@ public partial class MainWindow : Window
         var okBtn = new Button
         {
             Content = "Open Drive",
-            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5B6EF5")),
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+            Classes = { "primary" }
         };
         okBtn.Click += async (_, _) =>
         {
@@ -394,7 +440,7 @@ public partial class MainWindow : Window
         await dialog.ShowDialog(this);
     }
 
-    private readonly PS3HddTool.Core.EidKeyDatabase _keyDb = new();
+    private readonly PS3HddTool.Core.EidKeyDatabase _keyDb;
 
     private async void OnSaveKey(object? sender, RoutedEventArgs e)
     {
@@ -429,7 +475,9 @@ public partial class MainWindow : Window
             Width = 400,
             Height = 180,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            CanResize = false
+            CanResize = false,
+            Background = Wb.WindowBg,
+            Foreground = Wb.Body
         };
 
         var panel = new StackPanel { Margin = new global::Avalonia.Thickness(16), Spacing = 8 };
@@ -448,8 +496,7 @@ public partial class MainWindow : Window
         var saveBtn = new Button
         {
             Content = "Save",
-            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5B6EF5")),
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+            Classes = { "primary" }
         };
         saveBtn.Click += (_, _) =>
         {
@@ -483,7 +530,9 @@ public partial class MainWindow : Window
             Width = 550,
             Height = 400,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            CanResize = false
+            CanResize = false,
+            Background = Wb.WindowBg,
+            Foreground = Wb.Body
         };
 
         var panel = new StackPanel { Margin = new global::Avalonia.Thickness(16), Spacing = 8 };
@@ -520,7 +569,7 @@ public partial class MainWindow : Window
         var deleteBtn = new Button
         {
             Content = "Delete",
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#FF6B6B"))
+            Classes = { "danger" }
         };
         deleteBtn.Click += (_, _) =>
         {
@@ -539,8 +588,7 @@ public partial class MainWindow : Window
         var loadBtn = new Button
         {
             Content = "Load Key",
-            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5B6EF5")),
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+            Classes = { "primary" }
         };
         loadBtn.Click += (_, _) =>
         {
@@ -580,6 +628,16 @@ public partial class MainWindow : Window
             });
 
             if (files.Count == 0) return;
+
+            if (_vm.IsPs4)
+            {
+                if (files.Count != 1) throw new InvalidDataException("Select one 32-byte PS4 EAP HDD key file.");
+                string keyPath = files[0].TryGetLocalPath() ?? throw new IOException("A local key file is required.");
+                if (new FileInfo(keyPath).Length != 32)
+                    throw new InvalidDataException("A PS4 EAP HDD key file must contain exactly 32 bytes.");
+                _vm.ImportPs4Key(File.ReadAllBytes(keyPath));
+                return;
+            }
 
             // ─── Two-file import: data key + tweak key pair ───
             if (files.Count == 2)
@@ -773,7 +831,8 @@ public partial class MainWindow : Window
                 Height = 330,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
-                Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#0A0A10"))
+                Background = Wb.WindowBg,
+                Foreground = Wb.Body
             };
 
             var panel = new StackPanel { Margin = new global::Avalonia.Thickness(20), Spacing = 10 };
@@ -781,7 +840,7 @@ public partial class MainWindow : Window
             {
                 Text = "Select your PS3 model to derive the correct keys:",
                 FontWeight = global::Avalonia.Media.FontWeight.SemiBold,
-                Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+                Foreground = Wb.Text
             });
 
             var modelCombo = new ComboBox { MinWidth = 380 };
@@ -801,7 +860,7 @@ public partial class MainWindow : Window
                        "  • hdd_key.bin (combined ATA data+tweak)\n" +
                        "  • vflash_key.bin (combined ENCDEC data+tweak)",
                 FontSize = 12,
-                Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#8899BB")),
+                Foreground = Wb.TextSec,
                 FontFamily = new global::Avalonia.Media.FontFamily("Consolas,Courier New,monospace")
             });
 
@@ -816,8 +875,7 @@ public partial class MainWindow : Window
             var exportBtn = new Button
             {
                 Content = "Choose Folder & Export",
-                Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5B6EF5")),
-                Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+                Classes = { "primary" }
             };
 
             int selectedModel = -1;
@@ -923,6 +981,7 @@ public partial class MainWindow : Window
     private async void OnDecrypt(object? sender, RoutedEventArgs e)
     {
         await _vm.DecryptCommand.ExecuteAsync(null);
+        if (_vm.IsPs4) return;
         
         // After successful decrypt, prompt to save if key isn't already saved
         if (_vm.IsDecrypted && !string.IsNullOrEmpty(_vm.EidRootKeyHex))
@@ -953,7 +1012,9 @@ public partial class MainWindow : Window
                     Width = 420,
                     Height = 200,
                     WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                    CanResize = false
+                    CanResize = false,
+                    Background = Wb.WindowBg,
+                    Foreground = Wb.Body
                 };
                 
                 var panel = new StackPanel { Margin = new global::Avalonia.Thickness(16), Spacing = 8 };
@@ -980,8 +1041,7 @@ public partial class MainWindow : Window
                 var saveBtn = new Button
                 {
                     Content = "Save",
-                    Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5B6EF5")),
-                    Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Colors.White)
+                    Classes = { "primary" }
                 };
                 saveBtn.Click += (_, _) =>
                 {
@@ -1005,9 +1065,10 @@ public partial class MainWindow : Window
 
     private async void OnExtract(object? sender, RoutedEventArgs e)
     {
-        if (_vm.SelectedNode == null) return;
+        if (!_vm.CanExtract) return;
+        var node = _vm.SelectedNode!;
 
-        if (_vm.SelectedNode.IsDirectory)
+        if (node.IsDirectory)
         {
             var folder = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
             {
@@ -1020,8 +1081,12 @@ public partial class MainWindow : Window
                 string? path = folder[0].TryGetLocalPath();
                 if (path != null)
                 {
-                    string outputPath = Path.Combine(path, _vm.SelectedNode.Name);
-                    await _vm.ExtractCommand.ExecuteAsync((_vm.SelectedNode, outputPath));
+                    try
+                    {
+                        string outputPath = PS3HddTool.Core.FileSystem.Ufs2FileSystem.GetExtractionPath(path, node.Name);
+                        await _vm.ExtractCommand.ExecuteAsync((node, outputPath));
+                    }
+                    catch (Exception ex) { _vm.StatusText = $"Extraction error: {ex.Message}"; }
                 }
             }
         }
@@ -1030,32 +1095,34 @@ public partial class MainWindow : Window
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
                 Title = "Save extracted file",
-                SuggestedFileName = _vm.SelectedNode.Name
+                SuggestedFileName = node.Name
             });
 
             if (file != null)
             {
                 string? path = file.TryGetLocalPath();
                 if (path != null)
-                    await _vm.ExtractCommand.ExecuteAsync((_vm.SelectedNode, path));
+                    await _vm.ExtractCommand.ExecuteAsync((node, path));
             }
         }
     }
 
     private async void OnCreateDirectory(object? sender, RoutedEventArgs e)
     {
-
+        if (!_vm.CanWriteFiles) return;
         // Simple input dialog using a child window
         var dialog = new Window
         {
             Title = "Create Directory",
             Width = 400, Height = 150,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            CanResize = false
+            CanResize = false,
+            Background = Wb.WindowBg,
+            Foreground = Wb.Body
         };
 
         var textBox = new TextBox { Watermark = "Enter directory name...", Margin = new global::Avalonia.Thickness(12) };
-        var okButton = new Button { Content = "Create", HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right, Margin = new global::Avalonia.Thickness(12) };
+        var okButton = new Button { Content = "Create", Classes = { "primary" }, HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right, Margin = new global::Avalonia.Thickness(12) };
         var panel = new StackPanel { Margin = new global::Avalonia.Thickness(8) };
         panel.Children.Add(new TextBlock { Text = "New directory name:", Margin = new global::Avalonia.Thickness(12, 12, 12, 4) });
         panel.Children.Add(textBox);
@@ -1076,7 +1143,7 @@ public partial class MainWindow : Window
 
     private async void OnCopyFileToPs3(object? sender, RoutedEventArgs e)
     {
-
+        if (!_vm.CanWriteFiles) return;
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
             Title = "Select file to copy to PS3",
@@ -1097,6 +1164,7 @@ public partial class MainWindow : Window
 
     private async void OnCopyFolderToPs3(object? sender, RoutedEventArgs e)
     {
+        if (!_vm.CanWriteFiles) return;
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
         {
             Title = "Select folder to copy to PS3",
@@ -1121,6 +1189,7 @@ public partial class MainWindow : Window
 
     private async void OnInstallPkgToHdd(object? sender, RoutedEventArgs e)
     {
+        if (!_vm.CanWriteFiles) return;
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
             Title = "Select PKG to install to PS3 HDD",
@@ -1142,9 +1211,9 @@ public partial class MainWindow : Window
 
     private async void OnDeleteSelected(object? sender, RoutedEventArgs e)
     {
-        if (_vm.SelectedNode == null) return;
+        if (!_vm.CanEditSelection) return;
 
-        string name = _vm.SelectedNode.Name;
+        string name = _vm.SelectedNode!.Name;
         string type = _vm.SelectedNode.IsDirectory ? "directory" : "file";
 
         // Confirmation dialog
@@ -1153,7 +1222,9 @@ public partial class MainWindow : Window
             Title = "Confirm Delete",
             Width = 420, Height = 160,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            CanResize = false
+            CanResize = false,
+            Background = Wb.WindowBg,
+            Foreground = Wb.Body
         };
 
         bool confirmed = false;
@@ -1164,7 +1235,7 @@ public partial class MainWindow : Window
             TextWrapping = global::Avalonia.Media.TextWrapping.Wrap
         });
         var btnPanel = new StackPanel { Orientation = global::Avalonia.Layout.Orientation.Horizontal, Spacing = 8, HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right };
-        var deleteBtn = new Button { Content = "Delete" };
+        var deleteBtn = new Button { Content = "Delete", Classes = { "danger" } };
         var cancelBtn = new Button { Content = "Cancel" };
         deleteBtn.Click += (s, a) => { confirmed = true; dialog.Close(); };
         cancelBtn.Click += (s, a) => { dialog.Close(); };
@@ -1181,20 +1252,22 @@ public partial class MainWindow : Window
 
     private async void OnRename(object? sender, RoutedEventArgs e)
     {
-        if (_vm.SelectedNode == null) return;
+        if (!_vm.CanEditSelection) return;
 
-        string oldName = _vm.SelectedNode.Name;
+        string oldName = _vm.SelectedNode!.Name;
 
         var dialog = new Window
         {
             Title = "Rename",
             Width = 400, Height = 150,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            CanResize = false
+            CanResize = false,
+            Background = Wb.WindowBg,
+            Foreground = Wb.Body
         };
 
         var textBox = new TextBox { Text = oldName, Margin = new global::Avalonia.Thickness(12) };
-        var okButton = new Button { Content = "Rename", HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right, Margin = new global::Avalonia.Thickness(12) };
+        var okButton = new Button { Content = "Rename", Classes = { "primary" }, HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Right, Margin = new global::Avalonia.Thickness(12) };
         var panel = new StackPanel { Margin = new global::Avalonia.Thickness(8) };
         panel.Children.Add(new TextBlock { Text = "New name:", Margin = new global::Avalonia.Thickness(12, 12, 12, 4) });
         panel.Children.Add(textBox);
@@ -1216,70 +1289,47 @@ public partial class MainWindow : Window
         {
             Title = "About",
             Width = 440,
-            Height = 420,
+            Height = 460,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false,
-            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#050508"))
+            Background = Wb.WindowBg,
+            Foreground = Wb.Body
         };
 
-        // Outer container with top chrome strip
         var outer = new StackPanel { Spacing = 0 };
 
-        // Chrome accent strip
-        var strip = new Border
-        {
-            Height = 3,
-            Margin = new global::Avalonia.Thickness(0, 0, 0, 0)
-        };
-        strip.Background = new global::Avalonia.Media.LinearGradientBrush
-        {
-            StartPoint = new global::Avalonia.RelativePoint(0, 0, global::Avalonia.RelativeUnit.Relative),
-            EndPoint = new global::Avalonia.RelativePoint(1, 0, global::Avalonia.RelativeUnit.Relative),
-            GradientStops =
-            {
-                new global::Avalonia.Media.GradientStop(global::Avalonia.Media.Color.Parse("#001030"), 0),
-                new global::Avalonia.Media.GradientStop(global::Avalonia.Media.Color.Parse("#0060BB"), 0.5),
-                new global::Avalonia.Media.GradientStop(global::Avalonia.Media.Color.Parse("#001030"), 1),
-            }
-        };
-        outer.Children.Add(strip);
+        // Signal-orange accent strip
+        outer.Children.Add(new Border { Height = 3, Background = Wb.Accent });
 
         var panel = new StackPanel
         {
-            Margin = new global::Avalonia.Thickness(32, 28),
+            Margin = new global::Avalonia.Thickness(32, 26),
             Spacing = 6
         };
 
-        // Logo: PS3
-        var logoRow = new StackPanel
+        // Wordmark
+        panel.Children.Add(new TextBlock
         {
-            Orientation = global::Avalonia.Layout.Orientation.Horizontal,
+            Text = "PS3 / PS4 HDD Tool",
+            FontSize = 26,
+            FontWeight = global::Avalonia.Media.FontWeight.Medium,
+            Foreground = Wb.Text,
+            HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center
+        });
+        panel.Children.Add(new Border
+        {
+            Width = 30,
+            Height = 3,
+            CornerRadius = new global::Avalonia.CornerRadius(2),
+            Background = Wb.Accent,
             HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
-            Spacing = 4,
-            Margin = new global::Avalonia.Thickness(0, 0, 0, 4)
-        };
-        logoRow.Children.Add(new TextBlock
-        {
-            Text = "PS3",
-            FontSize = 32,
-            FontWeight = global::Avalonia.Media.FontWeight.Bold,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#005AAA")),
+            Margin = new global::Avalonia.Thickness(0, 2, 0, 8)
         });
-        logoRow.Children.Add(new TextBlock
-        {
-            Text = " HDD TOOL",
-            FontSize = 24,
-            FontWeight = global::Avalonia.Media.FontWeight.Light,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#607888")),
-            VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Bottom,
-            Margin = new global::Avalonia.Thickness(0, 0, 0, 2)
-        });
-        panel.Children.Add(logoRow);
 
         // Version badge
         var versionBorder = new Border
         {
-            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#0C1828")),
+            Background = Wb.Panel,
             CornerRadius = new global::Avalonia.CornerRadius(10),
             Padding = new global::Avalonia.Thickness(14, 3),
             HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
@@ -1289,91 +1339,78 @@ public partial class MainWindow : Window
         {
             Text = "v1.0",
             FontSize = 11,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#6898B8")),
+            Foreground = Wb.TextSec,
             HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center
         };
         panel.Children.Add(versionBorder);
 
-        // Divider
         panel.Children.Add(new Border
         {
             Height = 1,
-            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#14142A")),
+            Background = Wb.Hairline,
             Margin = new global::Avalonia.Thickness(20, 4)
         });
 
-        // Description
         panel.Children.Add(new TextBlock
         {
-            Text = "Decrypt, browse, extract, and write files to\nPS3 Fat NAND encrypted hard drives.",
+            Text = "Browse and extract PS3 and PS4 hard drives.\nPS4: read-only user and eap_user partitions.\nPS3: browsing, extraction, and write support.",
             TextAlignment = global::Avalonia.Media.TextAlignment.Center,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#98A8C0")),
+            Foreground = Wb.TextSec,
             FontSize = 13,
             LineHeight = 22,
             Margin = new global::Avalonia.Thickness(0, 4)
         });
 
-        // Divider
         panel.Children.Add(new Border
         {
             Height = 1,
-            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#14142A")),
+            Background = Wb.Hairline,
             Margin = new global::Avalonia.Thickness(20, 4)
         });
 
-        // Created by label
         panel.Children.Add(new TextBlock
         {
-            Text = "CREATED BY",
-            FontSize = 10,
-            FontWeight = global::Avalonia.Media.FontWeight.Bold,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5888A8")),
+            Text = "Created by",
+            FontSize = 11,
+            Foreground = Wb.TextMut,
             HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
             Margin = new global::Avalonia.Thickness(0, 6, 0, 2)
         });
 
-        // Author name
         panel.Children.Add(new TextBlock
         {
             Text = "Mena / Phenom Mod",
             FontSize = 20,
-            FontWeight = global::Avalonia.Media.FontWeight.Bold,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#0080DD")),
+            FontWeight = global::Avalonia.Media.FontWeight.Medium,
+            Foreground = Wb.Orange,
             HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
             Margin = new global::Avalonia.Thickness(0, 0, 0, 6)
         });
 
-        // Divider
         panel.Children.Add(new Border
         {
             Height = 1,
-            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#14142A")),
+            Background = Wb.Hairline,
             Margin = new global::Avalonia.Thickness(20, 4)
         });
 
-        // Tech stack
         panel.Children.Add(new TextBlock
         {
             Text = "Cross-platform  ·  .NET  ·  Avalonia",
             FontSize = 11,
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#5888A8")),
+            Foreground = Wb.TextMut,
             TextAlignment = global::Avalonia.Media.TextAlignment.Center,
             Margin = new global::Avalonia.Thickness(0, 4)
         });
 
-        // Close button
         var okButton = new Button
         {
             Content = "Close",
+            Classes = { "primary" },
             HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
             HorizontalContentAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
             Margin = new global::Avalonia.Thickness(0, 16, 0, 0),
             MinWidth = 120,
-            Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#003D80")),
-            Foreground = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#B0C8E8")),
-            BorderBrush = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.Parse("#005AAA")),
-            BorderThickness = new global::Avalonia.Thickness(1),
-            CornerRadius = new global::Avalonia.CornerRadius(3),
             Padding = new global::Avalonia.Thickness(0, 8)
         };
         okButton.Click += (s, args) => dialog.Close();
@@ -1416,4 +1453,52 @@ public partial class MainWindow : Window
 
         await vm.ExtractPkgAsync(pkgPath, outputDir);
     }
+
+    private void OnEject(object? sender, RoutedEventArgs e) => _vm.Eject();
+
+    private async void OnCopyPath(object? sender, RoutedEventArgs e)
+    {
+        if (_vm.IsBusy || _vm.SelectedNode == null) return;
+        string path = _vm.SelectedNode.FullPath;
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clipboard != null)
+        {
+            await clipboard.SetTextAsync(path);
+            _vm.StatusText = $"Path copied: {path}";
+        }
+    }
+
+    private async void OnRecentClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_vm.IsBusy || (sender as Button)?.DataContext is not RecentSourceEntry entry) return;
+        if (entry.Kind == "drive")
+            await _vm.OpenPhysicalDriveAsync((entry.Path, entry.Size));
+        else if (File.Exists(entry.Path))
+            await _vm.OpenImageAsync(entry.Path);
+        else
+        {
+            _vm.StatusText = $"File not found: {entry.Path}";
+            _vm.RemoveRecentSource(entry);
+        }
+    }
+}
+
+/// <summary>
+/// Workbench palette for code-built dialogs — mirrors App.axaml / MainWindow.axaml.
+/// </summary>
+internal static class Wb
+{
+    private static global::Avalonia.Media.SolidColorBrush B(string hex) =>
+        new(global::Avalonia.Media.Color.Parse(hex));
+
+    public static global::Avalonia.Media.SolidColorBrush WindowBg => B("#171614");
+    public static global::Avalonia.Media.SolidColorBrush Body => B("#C9C4B8");
+    public static global::Avalonia.Media.SolidColorBrush Text => B("#ECE9E2");
+    public static global::Avalonia.Media.SolidColorBrush TextSec => B("#A39F95");
+    public static global::Avalonia.Media.SolidColorBrush TextMut => B("#6B675E");
+    public static global::Avalonia.Media.SolidColorBrush Orange => B("#F08C2E");
+    public static global::Avalonia.Media.SolidColorBrush Accent => B("#E8842A");
+    public static global::Avalonia.Media.SolidColorBrush Red => B("#F07070");
+    public static global::Avalonia.Media.SolidColorBrush Hairline => B("#2C2B27");
+    public static global::Avalonia.Media.SolidColorBrush Panel => B("#262420");
 }

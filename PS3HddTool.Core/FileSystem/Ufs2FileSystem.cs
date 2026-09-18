@@ -5,8 +5,7 @@ using PS3HddTool.Core.Disk;
 namespace PS3HddTool.Core.FileSystem;
 
 /// <summary>
-/// UFS2 (Unix File System 2) implementation for reading the PS3's GameOS partition.
-/// The PS3 uses a FreeBSD-derived UFS2 filesystem.
+/// UFS2 reader for big-endian PS3 and little-endian PS4 partitions.
 /// 
 /// Key structures:
 ///   - Superblock at byte offset 65536 (0x10000) from partition start
@@ -21,11 +20,14 @@ public class Ufs2FileSystem
     public Ufs2Superblock? Superblock { get; private set; }
     public IDiskSource DiskSource => _disk;
     public long PartitionOffsetBytes => _partitionOffsetBytes;
+    private UfsByteOrder Reader => new(Superblock?.IsLittleEndian == true);
 
     public Ufs2FileSystem(IDiskSource disk, long partitionStartSector)
     {
+        if (partitionStartSector < 0 || partitionStartSector > disk.SectorCount)
+            throw new ArgumentOutOfRangeException(nameof(partitionStartSector));
         _disk = disk;
-        _partitionOffsetBytes = partitionStartSector * 512;
+        _partitionOffsetBytes = checked(partitionStartSector * 512);
     }
 
     /// <summary>
@@ -36,7 +38,9 @@ public class Ufs2FileSystem
         byte[] sbData = _disk.ReadBytes(_partitionOffsetBytes + 65536, 8192);
         RawSuperblockData = sbData;
         Superblock = Ufs2Superblock.Parse(sbData);
-        return Superblock.IsValid;
+        if (!Superblock.IsValid) return false;
+        Superblock.ValidateGeometry(_disk.TotalSize - _partitionOffsetBytes);
+        return true;
     }
 
     /// <summary>Raw superblock bytes for debugging.</summary>
@@ -49,18 +53,22 @@ public class Ufs2FileSystem
     {
         if (Superblock == null) throw new InvalidOperationException("Filesystem not mounted.");
 
+        if (inodeNumber < 0 || inodeNumber >= checked(Superblock.InodesPerGroup * Superblock.CylinderGroups))
+            throw new InvalidDataException("Inode number is outside the filesystem.");
         long inodesPerGroup = Superblock.InodesPerGroup;
         long group = inodeNumber / inodesPerGroup;
         long indexInGroup = inodeNumber % inodesPerGroup;
 
-        long cgOffset = _partitionOffsetBytes + (group * Superblock.FragsPerGroup * Superblock.FragmentSize);
-        long inodeTableOffset = cgOffset + (Superblock.InodeBlockOffset * Superblock.FragmentSize);
-        long inodeOffset = inodeTableOffset + (indexInGroup * Superblock.InodeSize);
+        long cgOffset = checked(_partitionOffsetBytes + (group * Superblock.FragsPerGroup * Superblock.FragmentSize));
+        long inodeTableOffset = checked(cgOffset + (Superblock.InodeBlockOffset * Superblock.FragmentSize));
+        long inodeOffset = checked(inodeTableOffset + (indexInGroup * Superblock.InodeSize));
+        if (inodeOffset > _disk.TotalSize - Superblock.InodeSize)
+            throw new InvalidDataException("Inode extends past the source.");
 
         byte[] inodeData = _disk.ReadBytes(inodeOffset, (int)Superblock.InodeSize);
-        return Ufs2Inode.Parse(inodeData, inodeNumber);
+        return Ufs2Inode.Parse(inodeData, inodeNumber, Superblock.IsLittleEndian);
     }
-    private int _inodeReadCount = 0;
+
 
     /// <summary>
     /// List the contents of a directory given its inode.
@@ -72,23 +80,28 @@ public class Ufs2FileSystem
             throw new ArgumentException("Inode is not a directory.");
 
         var entries = new List<Ufs2DirectoryEntry>();
+        if (dirInode.Size < 0 || dirInode.Size > 64 * 1024 * 1024)
+            throw new InvalidDataException("Directory is too large or has an invalid size.");
         byte[] dirData = ReadInodeData(dirInode);
 
         int offset = 0;
         while (offset < dirData.Length)
         {
-            if (offset + 8 > dirData.Length) break;
+            if (offset + 8 > dirData.Length) throw new InvalidDataException("Truncated directory record.");
 
-            uint ino = BinaryPrimitives.ReadUInt32BigEndian(dirData.AsSpan(offset));
-            ushort recLen = BinaryPrimitives.ReadUInt16BigEndian(dirData.AsSpan(offset + 4));
+            uint ino = Reader.ReadUInt32(dirData.AsSpan(offset));
+            ushort recLen = Reader.ReadUInt16(dirData.AsSpan(offset + 4));
             byte fileType = dirData[offset + 6];
             byte nameLen = dirData[offset + 7];
 
-            if (recLen == 0) break;
+            if (recLen < 8 || recLen % 4 != 0 || recLen > dirData.Length - offset || nameLen > recLen - 8)
+                throw new InvalidDataException("Invalid UFS2 directory record.");
 
             if (ino != 0 && nameLen > 0 && offset + 8 + nameLen <= dirData.Length)
             {
-                string name = Encoding.ASCII.GetString(dirData, offset + 8, nameLen);
+                string name = Encoding.UTF8.GetString(dirData, offset + 8, nameLen);
+                if (name.IndexOfAny(new[] { '/', '\0' }) >= 0)
+                    throw new InvalidDataException("Invalid UFS2 filename.");
                 entries.Add(new Ufs2DirectoryEntry
                 {
                     InodeNumber = ino,
@@ -109,179 +122,100 @@ public class Ufs2FileSystem
     /// </summary>
     public byte[] ReadInodeData(Ufs2Inode inode)
     {
-        if (Superblock == null) throw new InvalidOperationException("Filesystem not mounted.");
-
-        long fileSize = inode.Size;
-        if (fileSize == 0) return Array.Empty<byte>();
-
-        long blockSize = Superblock.BlockSize;
-        var data = new MemoryStream();
-
-        // Read direct blocks (12 pointers)
-        for (int i = 0; i < 12 && data.Length < fileSize; i++)
-        {
-            long blockAddr = inode.DirectBlocks[i];
-            if (blockAddr == 0) break;
-
-            byte[] blockData = ReadBlock(blockAddr);
-            int toWrite = (int)Math.Min(blockData.Length, fileSize - data.Length);
-            data.Write(blockData, 0, toWrite);
-        }
-
-        // Read single indirect blocks
-        if (data.Length < fileSize && inode.IndirectBlock != 0)
-        {
-            ReadIndirectBlocks(inode.IndirectBlock, 1, data, fileSize);
-        }
-
-        // Read double indirect blocks
-        if (data.Length < fileSize && inode.DoubleIndirectBlock != 0)
-        {
-            ReadIndirectBlocks(inode.DoubleIndirectBlock, 2, data, fileSize);
-        }
-
-        // Read triple indirect blocks
-        if (data.Length < fileSize && inode.TripleIndirectBlock != 0)
-        {
-            ReadIndirectBlocks(inode.TripleIndirectBlock, 3, data, fileSize);
-        }
-
-        return data.ToArray();
+        if (inode.Size < 0 || inode.Size > Array.MaxLength)
+            throw new InvalidDataException("File is too large for an in-memory read; use streaming extraction.");
+        using var output = new MemoryStream();
+        ExtractInodeToStream(inode, output);
+        return output.ToArray();
     }
 
-    /// <summary>
-    /// Stream inode data directly to an output stream (for large file extraction).
-    /// Coalesces contiguous block pointers into single large reads for performance.
-    /// Reports progress via callback.
-    /// </summary>
+    /// <summary>Stream direct and indirect blocks with bounded reads, preserving sparse holes.</summary>
     public void ExtractInodeToStream(Ufs2Inode inode, Stream output, Action<long>? progress = null)
     {
         if (Superblock == null) throw new InvalidOperationException("Filesystem not mounted.");
-
-        long fileSize = inode.Size;
-        if (fileSize == 0) return;
-
-        long blockSize = Superblock.BlockSize;
-        int fragsPerBlock = (int)(blockSize / Superblock.FragmentSize);
-
-        // Collect ALL block pointers first
-        var blockPointers = new List<long>();
-
-        // Direct blocks
-        for (int i = 0; i < 12; i++)
-        {
-            if (inode.DirectBlocks[i] == 0) break;
-            blockPointers.Add(inode.DirectBlocks[i]);
-        }
-
-        // Single indirect
-        if (inode.IndirectBlock != 0)
-            CollectIndirectPointers(inode.IndirectBlock, 1, blockPointers);
-
-        // Double indirect
-        if (inode.DoubleIndirectBlock != 0)
-            CollectIndirectPointers(inode.DoubleIndirectBlock, 2, blockPointers);
-
-        // Triple indirect
-        if (inode.TripleIndirectBlock != 0)
-            CollectIndirectPointers(inode.TripleIndirectBlock, 3, blockPointers);
-
-        // Now write data by coalescing contiguous block runs
+        if (inode.Size < 0) throw new InvalidDataException("Negative inode size.");
+        if (inode.Size == 0) return;
+        int blockSize = checked((int)Superblock.BlockSize);
+        long fragmentsPerBlock = blockSize / Superblock.FragmentSize;
+        const int maxReadBytes = 4 * 1024 * 1024;
+        using var blocks = EnumerateBlocks(inode).GetEnumerator();
+        bool hasBlock = blocks.MoveNext();
         long written = 0;
-        int idx = 0;
-
-        while (idx < blockPointers.Count && written < fileSize)
+        byte[] zeros = new byte[blockSize];
+        while (hasBlock && written < inode.Size)
         {
-            long runStart = blockPointers[idx];
-            int runBlocks = 1;
-
-            // Coalesce contiguous blocks
-            while (idx + runBlocks < blockPointers.Count &&
-                   blockPointers[idx + runBlocks] == runStart + (long)runBlocks * fragsPerBlock)
+            long first = blocks.Current;
+            if (first < 0) throw new InvalidDataException("Negative UFS2 block pointer.");
+            int run = 1;
+            hasBlock = blocks.MoveNext();
+            if (first != 0)
             {
-                runBlocks++;
+                while (hasBlock && run < maxReadBytes / blockSize &&
+                       blocks.Current == first + run * fragmentsPerBlock)
+                {
+                    run++;
+                    hasBlock = blocks.MoveNext();
+                }
             }
-
-            // Read the entire contiguous run in one I/O
-            long offset = _partitionOffsetBytes + (runStart * Superblock.FragmentSize);
-            int runBytes = (int)(runBlocks * blockSize);
-            int toWrite = (int)Math.Min(runBytes, fileSize - written);
-            byte[] runData = _disk.ReadBytes(offset, runBytes);
-
-            output.Write(runData, 0, toWrite);
-            written += toWrite;
-            idx += runBlocks;
+            int count = (int)Math.Min((long)run * blockSize, inode.Size - written);
+            byte[] data = first == 0 ? zeros : ReadFragmentRange(first, count);
+            output.Write(data, 0, count);
+            written += count;
             progress?.Invoke(written);
         }
+        if (written != inode.Size) throw new InvalidDataException("Inode size exceeds its block address capacity.");
     }
 
-    /// <summary>
-    /// Recursively collect all block pointers from indirect block chains.
-    /// </summary>
-    private void CollectIndirectPointers(long blockAddr, int level, List<long> pointers)
+    private IEnumerable<long> EnumerateBlocks(Ufs2Inode inode)
     {
-        if (blockAddr == 0) return;
-
-        byte[] indirectBlock = ReadBlock(blockAddr);
-        int pointersPerBlock = (int)(Superblock!.BlockSize / 8);
-
-        for (int i = 0; i < pointersPerBlock; i++)
+        long blockSize = Superblock!.BlockSize;
+        long remaining = inode.Size / blockSize + (inode.Size % blockSize == 0 ? 0 : 1);
+        foreach (long block in inode.DirectBlocks)
         {
-            long pointer = BinaryPrimitives.ReadInt64BigEndian(indirectBlock.AsSpan(i * 8));
-            if (pointer == 0) continue;
+            if (remaining-- <= 0) yield break;
+            yield return block;
+        }
+        long capacity = 1;
+        long[] roots = { inode.IndirectBlock, inode.DoubleIndirectBlock, inode.TripleIndirectBlock };
+        for (int level = 1; level <= 3 && remaining > 0; level++)
+        {
+            capacity = checked(capacity * (blockSize / 8));
+            long count = Math.Min(remaining, capacity);
+            foreach (long block in EnumerateIndirect(roots[level - 1], level, count)) yield return block;
+            remaining -= count;
+        }
+        if (remaining > 0) throw new InvalidDataException("Inode size exceeds its block address capacity.");
+    }
 
-            if (level == 1)
-                pointers.Add(pointer);
-            else
-                CollectIndirectPointers(pointer, level - 1, pointers);
+    private IEnumerable<long> EnumerateIndirect(long address, int level, long count)
+    {
+        if (address == 0)
+        {
+            for (long i = 0; i < count; i++) yield return 0;
+            yield break;
+        }
+        byte[] pointers = ReadFragmentRange(address, (int)Superblock!.BlockSize);
+        long childCapacity = 1;
+        for (int i = 1; i < level; i++) childCapacity *= Superblock.BlockSize / 8;
+        for (int i = 0; count > 0; i++)
+        {
+            long pointer = Reader.ReadInt64(pointers.AsSpan(i * 8));
+            if (pointer < 0) throw new InvalidDataException("Negative UFS2 block pointer.");
+            long take = Math.Min(count, childCapacity);
+            if (level == 1) yield return pointer;
+            else foreach (long block in EnumerateIndirect(pointer, level - 1, take)) yield return block;
+            count -= take;
         }
     }
 
-    /// <summary>
-    /// Read a data block at the given block address.
-    /// </summary>
-    private byte[] ReadBlock(long blockAddress)
+    private byte[] ReadFragmentRange(long fragment, int count)
     {
-        long offset = _partitionOffsetBytes + (blockAddress * Superblock!.FragmentSize);
-
-        if (offset < 0 || offset + Superblock.BlockSize > _disk.TotalSize)
-        {
-            throw new IOException(
-                $"ReadBlock: address 0x{blockAddress:X} maps to offset 0x{offset:X} " +
-                $"which is outside disk bounds (0 - 0x{_disk.TotalSize:X}).");
-        }
-
-        return _disk.ReadBytes(offset, (int)Superblock.BlockSize);
-    }
-
-    /// <summary>
-    /// Recursively read indirect block chains.
-    /// </summary>
-    private void ReadIndirectBlocks(long blockAddr, int level, MemoryStream data, long maxSize)
-    {
-        if (blockAddr == 0 || data.Length >= maxSize) return;
-
-        byte[] indirectBlock = ReadBlock(blockAddr);
-        int pointersPerBlock = (int)(Superblock!.BlockSize / 8); // UFS2 uses 64-bit block pointers
-
-        for (int i = 0; i < pointersPerBlock && data.Length < maxSize; i++)
-        {
-            long pointer = BinaryPrimitives.ReadInt64BigEndian(
-                indirectBlock.AsSpan(i * 8));
-
-            if (pointer == 0) continue;
-
-            if (level == 1)
-            {
-                byte[] blockData = ReadBlock(pointer);
-                int toWrite = (int)Math.Min(blockData.Length, maxSize - data.Length);
-                data.Write(blockData, 0, toWrite);
-            }
-            else
-            {
-                ReadIndirectBlocks(pointer, level - 1, data, maxSize);
-            }
-        }
+        if (fragment < 0 || fragment > (long.MaxValue - _partitionOffsetBytes) / Superblock!.FragmentSize)
+            throw new InvalidDataException("Invalid UFS2 fragment address.");
+        long offset = _partitionOffsetBytes + fragment * Superblock.FragmentSize;
+        if (offset > _disk.TotalSize - count)
+            throw new InvalidDataException("UFS2 block extends past the source.");
+        return _disk.ReadBytes(offset, count);
     }
 
     /// <summary>
@@ -313,42 +247,64 @@ public class Ufs2FileSystem
     /// <summary>
     /// Extract a file to disk.
     /// </summary>
-    public void ExtractFile(Ufs2Inode inode, string outputPath)
+    public void ExtractFile(Ufs2Inode inode, string outputPath, Action<long>? progress = null)
     {
+        RejectLink(outputPath);
         string? dir = Path.GetDirectoryName(outputPath);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
         using var fs = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536);
-        ExtractInodeToStream(inode, fs);
+        ExtractInodeToStream(inode, fs, progress);
     }
 
     /// <summary>
     /// Recursively extract a directory tree.
     /// </summary>
     public void ExtractDirectory(Ufs2Inode dirInode, string outputDir, IProgress<string>? progress = null)
+        => ExtractDirectory(dirInode, outputDir, progress, new HashSet<long>());
+
+    private void ExtractDirectory(Ufs2Inode dirInode, string outputDir, IProgress<string>? progress, HashSet<long> ancestors)
     {
+        if (ancestors.Count >= 256 || !ancestors.Add(dirInode.InodeNumber))
+            throw new InvalidDataException("Directory cycle or excessive nesting encountered.");
+        RejectLink(outputDir);
         Directory.CreateDirectory(outputDir);
-
-        var entries = ReadDirectory(dirInode);
-        foreach (var entry in entries)
+        try
         {
-            if (entry.Name == "." || entry.Name == "..") continue;
-
-            string outputPath = Path.Combine(outputDir, entry.Name);
-            var inode = ReadInode(entry.InodeNumber);
-
-            progress?.Report(outputPath);
-
-            if (inode.FileType == Ufs2FileType.Directory)
+            foreach (var entry in ReadDirectory(dirInode))
             {
-                ExtractDirectory(inode, outputPath, progress);
-            }
-            else if (inode.FileType == Ufs2FileType.RegularFile)
-            {
-                ExtractFile(inode, outputPath);
+                if (entry.Name == "." || entry.Name == "..") continue;
+                string outputPath = GetExtractionPath(outputDir, entry.Name);
+                var inode = ReadInode(entry.InodeNumber);
+                progress?.Report(outputPath);
+                if (inode.FileType == Ufs2FileType.Directory)
+                    ExtractDirectory(inode, outputPath, progress, ancestors);
+                else if (inode.FileType == Ufs2FileType.RegularFile)
+                    ExtractFile(inode, outputPath);
             }
         }
+        finally { ancestors.Remove(dirInode.InodeNumber); }
+    }
+
+    public static string GetExtractionPath(string directory, string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name is "." or ".." ||
+            name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.Contains('/') || name.Contains('\\') ||
+            name.EndsWith('.') || name.EndsWith(' '))
+            throw new InvalidDataException($"Cannot extract filename '{name}' on this host.");
+        return Path.Combine(directory, name);
+    }
+
+    private static void RejectLink(string path)
+    {
+        try
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("Extraction cannot overwrite or follow a destination symbolic link.");
+        }
+        catch (FileNotFoundException) { }
+        catch (DirectoryNotFoundException) { }
     }
 }
 
@@ -375,6 +331,7 @@ public class Ufs2Superblock
     public string VolumeName { get; set; } = "";
 
     public bool IsValid => Magic == Ufs2Magic;
+    public bool IsLittleEndian { get; private set; }
 
     // Free space summary (fs_cstotal at offset 0x3F0)
     public long FreeBlocks { get; set; }     // cs_nbfree
@@ -385,45 +342,64 @@ public class Ufs2Superblock
     /// <summary>Free space in bytes, computed from free blocks + free fragments.</summary>
     public long FreeSpaceBytes => (FreeBlocks * BlockSize) + (FreeFragments * FragmentSize);
 
+    public void ValidateGeometry(long availableBytes)
+    {
+        static bool PowerOfTwo(long value) => value > 0 && (value & (value - 1)) == 0;
+        if (!IsValid || !PowerOfTwo(BlockSize) || BlockSize is < 4096 or > 65536 ||
+            !PowerOfTwo(FragmentSize) || FragmentSize < 512 || FragmentSize > BlockSize ||
+            BlockSize / FragmentSize > 8 || InodesPerGroup <= 0 || FragsPerGroup <= 0 ||
+            CylinderGroups <= 0 || InodeBlockOffset <= 0 || InodeBlockOffset >= FragsPerGroup ||
+            InodesPerGroup > FragsPerGroup * FragmentSize / 256 ||
+            (long)(CylinderGroups - 1) > availableBytes / FragmentSize / FragsPerGroup)
+            throw new InvalidDataException("Invalid UFS2 filesystem geometry.");
+        if (IsLittleEndian && (TotalFragments <= 0 || TotalFragments > availableBytes / FragmentSize))
+            throw new InvalidDataException("UFS2 filesystem extends past the partition.");
+    }
+
     public static Ufs2Superblock Parse(byte[] data)
     {
         var sb = new Ufs2Superblock();
+        if (data.Length < 0x560) return sb;
+        sb.IsLittleEndian = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0x55C)) == Ufs2Magic;
+        var reader = new UfsByteOrder(sb.IsLittleEndian);
 
         // The magic number is at offset 0x55C (1372) in the superblock
-        if (data.Length > 0x560)
+        if (data.Length >= 0x560)
         {
-            sb.Magic = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(0x55C));
+            sb.Magic = reader.ReadUInt32(data.AsSpan(0x55C));
         }
 
         if (!sb.IsValid) return sb;
 
         // Parse key fields (offsets from FreeBSD sys/ufs/ffs/fs.h)
-        // PS3 uses big-endian byte order (PowerPC Cell)
-        sb.BlockSize = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(0x30));       // fs_bsize
-        sb.FragmentSize = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(0x34));    // fs_fsize
-        sb.FragsPerGroup = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(0xBC));   // fs_fpg (NOT 0x74!)
-        sb.InodesPerGroup = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(0xB8));  // fs_ipg
-        sb.InodeBlockOffset = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(0x10));// fs_iblkno
-        sb.TotalFragments = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x218)); // fs_size (UFS2 64-bit)
-        sb.TotalDataFragments = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x220)); // fs_dsize
-        sb.CylinderGroups = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(0x2C));  // fs_ncg (NOT 0xBC!)
+        // PS3 is big-endian; PS4 is little-endian. Preserve the existing PS3
+        // size/name field layout while using the standard UFS2 offsets for PS4.
+        sb.BlockSize = reader.ReadInt32(data.AsSpan(0x30));       // fs_bsize
+        sb.FragmentSize = reader.ReadInt32(data.AsSpan(0x34));    // fs_fsize
+        sb.FragsPerGroup = reader.ReadInt32(data.AsSpan(0xBC));   // fs_fpg (NOT 0x74!)
+        sb.InodesPerGroup = reader.ReadInt32(data.AsSpan(0xB8));  // fs_ipg
+        sb.InodeBlockOffset = reader.ReadInt32(data.AsSpan(0x10));// fs_iblkno
+        sb.TotalFragments = reader.ReadInt64(data.AsSpan(sb.IsLittleEndian ? 0x438 : 0x218)); // fs_size (UFS2 64-bit)
+        sb.TotalDataFragments = reader.ReadInt64(data.AsSpan(sb.IsLittleEndian ? 0x440 : 0x220)); // fs_dsize
+        sb.CylinderGroups = reader.ReadInt32(data.AsSpan(0x2C));  // fs_ncg (NOT 0xBC!)
         sb.InodeSize = 256; // UFS2 always uses 256-byte inodes
 
-        // fs_cstotal at 0x3F0: int64 BE fields
+        // fs_cstotal at 0x3F0: int64 fields in the filesystem's byte order.
         if (data.Length >= 0x418)
         {
-            sb.Directories = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x3F0));    // cs_ndir
-            sb.FreeBlocks = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x3F8));     // cs_nbfree
-            sb.FreeInodes = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x400));     // cs_nifree
-            sb.FreeFragments = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x408));  // cs_nffree
+            sb.Directories = reader.ReadInt64(data.AsSpan(0x3F0));    // cs_ndir
+            sb.FreeBlocks = reader.ReadInt64(data.AsSpan(0x3F8));     // cs_nbfree
+            sb.FreeInodes = reader.ReadInt64(data.AsSpan(0x400));     // cs_nifree
+            sb.FreeFragments = reader.ReadInt64(data.AsSpan(0x408));  // cs_nffree
         }
 
-        // Volume name at offset 0x480 (fs_volname), 32 bytes max
+        // Volume name, 32 bytes max.
         if (data.Length >= 0x4A0)
         {
-            int nameEnd = Array.IndexOf(data, (byte)0, 0x480, 32);
-            if (nameEnd < 0) nameEnd = 0x4A0;
-            sb.VolumeName = Encoding.ASCII.GetString(data, 0x480, nameEnd - 0x480).TrimEnd('\0');
+            int nameOffset = sb.IsLittleEndian ? 0x2A8 : 0x480;
+            int nameEnd = Array.IndexOf(data, (byte)0, nameOffset, 32);
+            if (nameEnd < 0) nameEnd = nameOffset + 32;
+            sb.VolumeName = Encoding.UTF8.GetString(data, nameOffset, nameEnd - nameOffset).TrimEnd('\0');
         }
 
         return sb;
@@ -495,8 +471,10 @@ public class Ufs2Inode
         return new string(perms);
     }
 
-    public static Ufs2Inode Parse(byte[] data, long inodeNumber)
+    public static Ufs2Inode Parse(byte[] data, long inodeNumber, bool littleEndian = false)
     {
+        if (data.Length < 256) throw new InvalidDataException("Truncated UFS2 inode.");
+        var reader = new UfsByteOrder(littleEndian);
         var inode = new Ufs2Inode { InodeNumber = inodeNumber, RawBytes = (byte[])data.Clone() };
 
         // FreeBSD UFS2 dinode layout (256 bytes, from sys/ufs/ufs/dinode.h):
@@ -524,7 +502,7 @@ public class Ufs2Inode
         // 0xF0: u32 di_freelink
         // ... padding to 256 bytes
 
-        ushort mode = BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(0x00));
+        ushort mode = reader.ReadUInt16(data.AsSpan(0x00));
         inode.Mode = mode;
         inode.FileType = (mode & 0xF000) switch
         {
@@ -538,31 +516,31 @@ public class Ufs2Inode
             _ => Ufs2FileType.Unknown
         };
 
-        inode.LinkCount = BinaryPrimitives.ReadInt16BigEndian(data.AsSpan(0x02));
-        inode.Uid = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(0x04));
-        inode.Gid = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(0x08));
-        inode.Size = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x10));
-        inode.Blocks = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x18));
+        inode.LinkCount = reader.ReadInt16(data.AsSpan(0x02));
+        inode.Uid = reader.ReadUInt32(data.AsSpan(0x04));
+        inode.Gid = reader.ReadUInt32(data.AsSpan(0x08));
+        inode.Size = reader.ReadInt64(data.AsSpan(0x10));
+        inode.Blocks = reader.ReadInt64(data.AsSpan(0x18));
 
         // PS3 UFS2 inode timestamp layout (non-interleaved):
         //   0x20: di_atime (8B), 0x28: di_mtime (8B), 0x30: di_ctime (8B), 0x38: di_birthtime (8B)
         //   0x40-0x4F: nanosecond fields (4 x 4B)
         // Verified by comparing PS3-native inode hex dumps.
-        inode.AccessTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x20));
-        inode.ModifyTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x28));
-        inode.ChangeTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x30));
-        inode.CreateTime = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x38));
+        inode.AccessTime = reader.ReadInt64(data.AsSpan(0x20));
+        inode.ModifyTime = reader.ReadInt64(data.AsSpan(0x28));
+        inode.ChangeTime = reader.ReadInt64(data.AsSpan(0x30));
+        inode.CreateTime = reader.ReadInt64(data.AsSpan(0x38));
 
-        inode.Flags = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(0x58));
+        inode.Flags = reader.ReadUInt32(data.AsSpan(0x58));
 
         // Direct block pointers at offset 0x70 (12 x 8 bytes = 96 bytes)
         for (int i = 0; i < 12; i++)
-            inode.DirectBlocks[i] = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0x70 + i * 8));
+            inode.DirectBlocks[i] = reader.ReadInt64(data.AsSpan(0x70 + i * 8));
 
         // Indirect block pointers at offset 0xD0
-        inode.IndirectBlock = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0xD0));
-        inode.DoubleIndirectBlock = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0xD8));
-        inode.TripleIndirectBlock = BinaryPrimitives.ReadInt64BigEndian(data.AsSpan(0xE0));
+        inode.IndirectBlock = reader.ReadInt64(data.AsSpan(0xD0));
+        inode.DoubleIndirectBlock = reader.ReadInt64(data.AsSpan(0xD8));
+        inode.TripleIndirectBlock = reader.ReadInt64(data.AsSpan(0xE0));
 
         return inode;
     }

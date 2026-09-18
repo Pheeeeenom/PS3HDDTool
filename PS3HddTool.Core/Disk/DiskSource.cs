@@ -57,6 +57,8 @@ public sealed class ImageDiskSource : IDiskSource
 
     public byte[] ReadBytes(long offset, int count)
     {
+        if (offset < 0 || count < 0 || offset > TotalSize - count)
+            throw new ArgumentOutOfRangeException(nameof(offset), "Read exceeds the image.");
         lock (_lock)
         {
             byte[] buffer = new byte[count];
@@ -65,7 +67,7 @@ public sealed class ImageDiskSource : IDiskSource
             while (totalRead < count)
             {
                 int read = _stream.Read(buffer, totalRead, count - totalRead);
-                if (read == 0) break;
+                if (read == 0) throw new EndOfStreamException("Disk image was truncated during reading.");
                 totalRead += read;
             }
             return buffer;
@@ -217,7 +219,7 @@ public sealed class PhysicalDiskSource : IDiskSource
                     while (totalRead < chunkBytes)
                     {
                         int read = _stream.Read(buffer, bufferOffset + totalRead, chunkBytes - totalRead);
-                        if (read == 0) break;
+                        if (read == 0) throw new EndOfStreamException("Short read from physical disk.");
                         totalRead += read;
                     }
                 }
@@ -255,7 +257,7 @@ public sealed class PhysicalDiskSource : IDiskSource
             while (totalRead < alignedLength)
             {
                 int read = _stream.Read(alignedBuffer, totalRead, alignedLength - totalRead);
-                if (read == 0) break;
+                if (read == 0) throw new EndOfStreamException("Short read from physical disk.");
                 totalRead += read;
             }
 

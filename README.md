@@ -1,133 +1,90 @@
-# PS3 HDD Tool
+# PS3 / PS4 HDD Tool
 
-A cross-platform GUI application for decrypting and browsing PS3 hard drives using per-console HDD Key.
+A .NET 10 and Avalonia application for browsing console hard drives and raw disk images on Windows, Linux, and macOS.
 
-Built with **.NET 8** and **Avalonia UI** — runs on Windows, macOS, and Linux.
+## Supported disks
 
-## Features
+| Source | Keys | Available operations |
+| --- | --- | --- |
+| PS3 NAND | EID Root Key or pre-derived CBC-192 ATA key | Browse, extract, and existing PS3 write operations |
+| PS3 NOR / Slim | EID Root Key or pre-derived XTS-128 ATA keys | Browse, extract, and existing PS3 write operations |
+| PS4 internal HDD / full raw disk image | 32-byte EAP HDD key | Read-only browsing and extraction of `user` and `eap_user` |
 
-- **Decrypt PS3 HDD** — AES-XTS-128 decryption using your EID Root Key
-- **Support for disk images and physical drives** — Works with `.img`, `.bin`, `.dd`, `.raw` files or direct device access
-- **Browse UFS2 filesystem** — Navigate the PS3's FreeBSD-derived file system with a tree view
-- **Extract files and folders** — Export individual files or entire directory trees
-- **Partition viewer** — See the PS3's disk layout and partition structure
-- **Activity log** — Detailed logging of all operations
+Images can use `.img`, `.bin`, `.dd`, or `.raw` extensions. These are raw sector images, not compressed or virtual-disk containers. Physical disk access may require administrator/root privileges. The reader requires 512-byte logical sectors.
 
-## Prerequisites
+## PS4: browse and extract
 
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- Your PS3 console's **EID Root Key OR ATA key + tweak from qCFW** (32 bytes / 64 hex characters)
+1. Choose **Image file** or **Physical drive** on the setup screen. A full PS4 disk is recognized from its GPT partition table.
+2. Click **Import .bin** and select your console's 32-byte `keys.bin` or `eap_hdd_key.bin`. You can also enter 64 hexadecimal characters directly. Obtain the key separately; this application does not dump it from the console.
+3. Select **user** or **eap_user** in **PS4 partition**, then click **Mount Partition**.
+4. Expand folders, select a file or directory, and click **Extract** to save it to your computer.
+5. To switch partitions, choose another partition and click **Mount Partition** again.
 
-## Building
+Key byte order and XTS IV mode are detected automatically: the reader tries the supplied key and reversal within each 16-byte half, with either zero IV offset or `(GPT slot - 1) << 32`. Each candidate must yield valid little-endian UFS2 geometry and a valid root directory. Disk offsets and partition-relative XTS sector numbers are handled separately.
 
-```bash
-# Clone or extract the project
-cd PS3HddTool
+PS4 sources are opened read-only. The partition reader rejects every write operation, and PS3 write/PKG installation actions are unavailable. PS4 keys are not added to the PS3 key/profile database or written into activity logs.
 
-# Restore packages
-dotnet restore
+Current limits:
 
-# Build
-dotnet build
+- Full internal-HDD images with an intact primary GPT are supported; standalone partition images and backup-GPT recovery are not implemented.
+- `update` and `eap_vsh` are shown but require a FAT reader. Other encrypted partitions require different keys or formats and cannot be mounted by this feature.
+- USB extended storage, PS4 PKG processing, writes, and deleted-file recovery are not included.
+- Extraction handles regular files and directories, including sparse files and single/double/triple indirect blocks. Source symbolic links and special files are skipped during folder extraction.
+- Names that cannot be represented safely on the destination platform produce an error. Extraction does not follow existing destination symbolic links. Existing regular destination files are overwritten.
 
-# Run
+References: [PS4 mounting guide](https://www.psdevwiki.com/ps4/Mounting_HDD_in_Linux), [PS4 partition types](https://www.psdevwiki.com/ps4/Partitions), [UFS structures](https://github.com/torvalds/linux/blob/master/fs/ufs/ufs_fs.h).
+
+## PS3 usage
+
+Open a disk, import its EID Root Key or pre-derived HDD keys, and click **Decrypt and mount**. The EID Root Key is 48 bytes: a 32-byte AES key and 16-byte IV. Pre-derived XTS keys contain 16-byte data and tweak halves; CBC imports use the existing 48-byte combined format. The key importer also accepts separate data/tweak files.
+
+The existing PS3 features include UFS2 browsing, extraction, image previews, saved keys and drive profiles, file/folder writes, directory creation, rename/delete, and PS3 PKG extraction/installation. **Fake writes on** is enabled by default. Image files currently open read-only; actual PS3 writes use writable physical disks.
+
+The Workbench interface uses a charcoal/orange theme, guided setup, a resizable file browser, and a collapsible **Log**. Right-click files for extraction, copy path, and (PS3 only) rename/delete. **Eject** returns to setup; the five most recent sources are remembered for reopening. Recent-source storage contains paths and sizes, not encryption keys.
+
+## Build and run
+
+Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0), then:
+
+```sh
+dotnet restore PS3HddTool.sln
+dotnet build PS3HddTool.sln
 dotnet run --project PS3HddTool.Avalonia
 ```
 
-### Publish a self-contained executable
+To publish a self-contained Windows executable:
 
-```bash
-# Windows
+```sh
 dotnet publish PS3HddTool.Avalonia -c Release -r win-x64 --self-contained
-
-# Linux
-dotnet publish PS3HddTool.Avalonia -c Release -r linux-x64 --self-contained
-
-# macOS (Intel)
-dotnet publish PS3HddTool.Avalonia -c Release -r osx-x64 --self-contained
-
-# macOS (Apple Silicon)
-dotnet publish PS3HddTool.Avalonia -c Release -r osx-arm64 --self-contained
 ```
 
-## Usage
+Other runtime targets include `linux-x64`, `osx-x64`, and `osx-arm64`.
 
-1. **Open a disk source**
-   - Click **Open Image File** to load a disk image (`.img`, `.bin`, `.dd`, `.raw`)
-   - Click **Open Physical Drive** to access a PS3 HDD connected via USB/SATA adapter
+## Verification
 
-2. **Enter your EID Root Key**
-   - Paste the 64-character hex string into the key field
-   - Accepted formats: `AABBCC...`, `AA BB CC...`, `AA:BB:CC...`
+The executable test project returns a nonzero exit code on failure:
 
-3. **Decrypt**
-   - Click **Decrypt** — the tool will derive the AES-XTS keys and attempt to mount the UFS2 filesystem
-   - The partition table and filesystem structure will appear if successful
-
-4. **Browse and extract**
-   - Navigate the filesystem tree on the left
-   - Select any file or folder to see its details
-   - Click **Extract Selected** to save files to your computer
-
-## How It Works
-
-### Encryption
-The PS3 encrypts its HDD using **AES-XTS-128**. The encryption keys are derived from the console's **EID Root Key** — a unique 32-byte key stored in each console's NAND/NOR flash memory.
-
-The tool supports two key derivation paths:
-- **Standard derivation**: HMAC-SHA1 of the EID Root Key halves with a fixed seed
-- **Per-drive derivation**: AES-CBC decryption of encrypted ATA key data from the HDD header using the EID Root Key
-
-### Filesystem
-The PS3's GameOS partition uses **UFS2** (Unix File System 2), the same filesystem used by FreeBSD. The tool implements a read-only UFS2 parser that handles:
-- Superblock parsing
-- Cylinder group navigation
-- Inode reading (direct, indirect, double/triple indirect blocks)
-- Directory entry parsing
-- File data extraction
-
-## Project Structure
-
-```
-PS3HddTool/
-├── PS3HddTool.sln                    # Solution file
-├── PS3HddTool.Core/                  # Core library (no GUI dependencies)
-│   ├── Crypto/
-│   │   ├── AesXts128.cs              # AES-XTS-128 implementation
-│   │   └── Ps3KeyDerivation.cs       # EID Root Key → encryption keys
-│   ├── Disk/
-│   │   ├── DiskSource.cs             # Image file & physical disk readers
-│   │   ├── DecryptedDiskSource.cs    # Transparent decryption wrapper
-│   │   └── Ps3DiskLayout.cs          # Partition table parser
-│   ├── FileSystem/
-│   │   └── Ufs2FileSystem.cs         # UFS2 filesystem implementation
-│   └── Models/
-│       └── FileTreeNode.cs           # UI model for file browser
-├── PS3HddTool.Avalonia/              # GUI application
-│   ├── ViewModels/
-│   │   └── MainViewModel.cs          # Main application logic (MVVM)
-│   ├── Views/
-│   │   ├── MainWindow.axaml          # UI layout
-│   │   └── MainWindow.axaml.cs       # Event handlers
-│   ├── App.axaml / App.axaml.cs      # Avalonia application entry
-│   └── Program.cs                    # Entry point
-└── README.md
+```sh
+dotnet run --project PS3HddTool.Tests
 ```
 
-## Important Notes
-- **EID Root Key**: You need to obtain this from your own console (e.g., via PS3Xploit, hardware flasher, or UART dump). This tool does not extract the key.
-- **Large drives**: For HDDs over 500GB, initial directory loading may take a moment as sectors are decrypted on-the-fly.
-- **Key verification**: If the UFS2 superblock isn't found after decryption, the key may be incorrect or the partition layout may differ from the standard one.
+It covers GPT validation and slot numbering, XTS/key/IV combinations, partition bounds, write rejection, both UFS2 byte orders, sparse and indirect extraction, PS3 crypto compatibility, mount lifecycle, and headless window bindings. Generated fixtures and rendered window previews go under ignored `artifacts/ps4-tests/` directories.
 
-## Troubleshooting
+Optional real-image verification (opens the source read-only):
 
-| Issue | Solution |
-|-------|---------|
-| "UFS2 superblock not found" | Verify your EID Root Key is correct. Try different partition offsets. |
-| "Invalid EID Root Key" | Ensure the key is exactly 64 hex characters (32 bytes). |
-| Physical drive not accessible | Run the application with administrator/root privileges. |
-| Slow browsing | Large directories decrypt sectors on demand — first access is slower. |
+```sh
+dotnet run --project PS3HddTool.Tests -- "ps4hdd/User.img" "ps4hdd/keys.bin"
+```
+
+This browses both supported partitions and extracts up to two files of at most 32 MiB per partition. Extracted hashes are compared with an independent block-by-block reader. Source length and modification time are checked afterward. Real images and keys are not bundled with tests.
+
+## Project structure
+
+- `PS3HddTool.Core`: disk I/O, PS3 crypto, PS4 GPT/mounting, UFS2 reads/writes, PS3 PKG support.
+- `PS3HddTool.Avalonia`: UI, disk lifecycle, partition selection, browsing and extraction.
+- `PS3HddTool.Tests`: synthetic regression tests and optional real-image checks.
+- `docs/PS3_UFS2_Filesystem_Reference_Final.md`: existing PS3 filesystem reference.
 
 ## License
 
-See License.md
+See [LICENSE.md](LICENSE.md).

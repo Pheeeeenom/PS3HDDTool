@@ -18,9 +18,9 @@ public class DriveProfileDatabase
 
     public IReadOnlyList<DriveProfile> Profiles => _profiles.AsReadOnly();
 
-    public DriveProfileDatabase()
+    public DriveProfileDatabase(string? storageDirectory = null)
     {
-        string appData = Path.Combine(
+        string appData = storageDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "PS3HddTool");
         Directory.CreateDirectory(appData);

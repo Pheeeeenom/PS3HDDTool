@@ -3,452 +3,624 @@
         xmlns:vm="using:PS3HddTool.Avalonia.ViewModels"
         xmlns:models="using:PS3HddTool.Core.Models"
         x:Class="PS3HddTool.Avalonia.Views.MainWindow"
-        Title="PS3 HDD Tool"
+        Title="PS3 / PS4 HDD Tool"
         Width="1200" Height="800"
-        MinWidth="900" MinHeight="650"
+        MinWidth="960" MinHeight="660"
         WindowStartupLocation="CenterScreen"
-        Background="#050508"
+        Background="#171614"
+        Foreground="#C9C4B8"
+        FontSize="12"
         Icon="/Assets/icon.png">
 
     <Window.Styles>
 
         <!-- ═══════════════════════════════════════════════════════════ -->
-        <!-- PS3 FAT — XrossMediaBar inspired theme                     -->
-        <!-- Deep black, signature blue chrome, subtle glow accents     -->
+        <!-- Workbench — warm charcoal, hairline borders, signal orange  -->
+        <!-- Guided flow: setup screen until mounted, then the browser   -->
         <!-- ═══════════════════════════════════════════════════════════ -->
 
-        <!-- Section headers: uppercase, tracked, blue -->
-        <Style Selector="TextBlock.header">
-            <Setter Property="FontSize" Value="11"/>
-            <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="Foreground" Value="#5590C0"/>
-            <Setter Property="Margin" Value="0,0,0,10"/>
-            <Setter Property="LetterSpacing" Value="2.5"/>
-        </Style>
-
-        <!-- Cards: near-black with blue-tinted border -->
+        <!-- Cards -->
         <Style Selector="Border.card">
-            <Setter Property="Background" Value="#09090F"/>
-            <Setter Property="CornerRadius" Value="4"/>
-            <Setter Property="Padding" Value="16"/>
-            <Setter Property="Margin" Value="3"/>
-            <Setter Property="BorderBrush" Value="#14142A"/>
+            <Setter Property="Background" Value="#1E1D1A"/>
+            <Setter Property="BorderBrush" Value="#2C2B27"/>
             <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="16,14"/>
         </Style>
 
-        <!-- Primary button: PS3 chrome blue -->
-        <Style Selector="Button.primary">
-            <Setter Property="Background" Value="#003D80"/>
-            <Setter Property="Foreground" Value="#B0C8E8"/>
-            <Setter Property="Padding" Value="18,8"/>
-            <Setter Property="CornerRadius" Value="3"/>
-            <Setter Property="BorderBrush" Value="#005AAA"/>
+        <!-- Pill chips -->
+        <Style Selector="Border.chip">
+            <Setter Property="Background" Value="#1E1D1A"/>
+            <Setter Property="BorderBrush" Value="#2C2B27"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-        </Style>
-        <Style Selector="Button.primary:pointerover">
-            <Setter Property="Background" Value="#005AAA"/>
-            <Setter Property="Foreground" Value="#E0ECF8"/>
-            <Setter Property="BorderBrush" Value="#0070CC"/>
-        </Style>
-        <Style Selector="Button.primary:pressed">
-            <Setter Property="Background" Value="#002D60"/>
+            <Setter Property="CornerRadius" Value="99"/>
+            <Setter Property="Padding" Value="10,3"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
 
-        <!-- Default button: dark chrome -->
+        <!-- Buttons: base metrics (colors come from app resources) -->
         <Style Selector="Button">
-            <Setter Property="Background" Value="#0C0C18"/>
-            <Setter Property="Foreground" Value="#B0BECE"/>
-            <Setter Property="BorderBrush" Value="#1C1C34"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="3"/>
-            <Setter Property="Padding" Value="14,7"/>
+            <Setter Property="Padding" Value="13,6"/>
+            <Setter Property="CornerRadius" Value="6"/>
             <Setter Property="FontSize" Value="12"/>
-        </Style>
-        <Style Selector="Button:pointerover">
-            <Setter Property="Background" Value="#14142A"/>
-            <Setter Property="Foreground" Value="#C0D0E8"/>
-            <Setter Property="BorderBrush" Value="#252546"/>
-        </Style>
-        <Style Selector="Button:pressed">
-            <Setter Property="Background" Value="#08080F"/>
+            <Setter Property="BorderThickness" Value="1"/>
         </Style>
 
-        <!-- Danger button -->
-        <Style Selector="Button.danger">
-            <Setter Property="Background" Value="#200810"/>
-            <Setter Property="Foreground" Value="#C04050"/>
-            <Setter Property="BorderBrush" Value="#381020"/>
+        <!-- Primary/danger button variants live in App.axaml (shared with dialogs) -->
+
+        <!-- Source tiles on the setup screen -->
+        <Style Selector="Button.tile">
+            <Setter Property="Background" Value="#171614"/>
+            <Setter Property="BorderBrush" Value="#2C2B27"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="14,13"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
         </Style>
-        <Style Selector="Button.danger:pointerover">
-            <Setter Property="Background" Value="#301018"/>
-            <Setter Property="Foreground" Value="#E06070"/>
+        <Style Selector="Button.tile:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#1B1A17"/>
+            <Setter Property="BorderBrush" Value="#8A5A1E"/>
+        </Style>
+        <Style Selector="Button.tile:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#141312"/>
+            <Setter Property="BorderBrush" Value="#8A5A1E"/>
         </Style>
 
-        <!-- TextBox: deep recessed input -->
+        <!-- Recent source rows -->
+        <Style Selector="Button.recent">
+            <Setter Property="Background" Value="#1B1A17"/>
+            <Setter Property="BorderBrush" Value="#292824"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="11,7"/>
+            <Setter Property="Margin" Value="0,6,0,0"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        </Style>
+        <Style Selector="Button.recent:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#22211D"/>
+            <Setter Property="BorderBrush" Value="#3A3833"/>
+        </Style>
+
+        <!-- Fake-write safety toggle: green when on (safe), red when off (real writes) -->
+        <Style Selector="ToggleButton.safety">
+            <Setter Property="Padding" Value="11,4"/>
+            <Setter Property="CornerRadius" Value="99"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Background" Value="#2E1614"/>
+            <Setter Property="Foreground" Value="#F07070"/>
+            <Setter Property="BorderBrush" Value="#543029"/>
+        </Style>
+        <Style Selector="ToggleButton.safety:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#38201C"/>
+            <Setter Property="Foreground" Value="#F58585"/>
+            <Setter Property="BorderBrush" Value="#6B403A"/>
+        </Style>
+        <Style Selector="ToggleButton.safety:checked /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#18241B"/>
+            <Setter Property="Foreground" Value="#5FB86A"/>
+            <Setter Property="BorderBrush" Value="#2A4530"/>
+        </Style>
+        <Style Selector="ToggleButton.safety:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#1D2E22"/>
+            <Setter Property="Foreground" Value="#74C97F"/>
+            <Setter Property="BorderBrush" Value="#36553E"/>
+        </Style>
+
+        <!-- Quiet toggle for the log strip -->
+        <Style Selector="ToggleButton.ghost">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#6B675E"/>
+            <Setter Property="Padding" Value="8,3"/>
+            <Setter Property="CornerRadius" Value="5"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+        <Style Selector="ToggleButton.ghost:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#22211D"/>
+            <Setter Property="Foreground" Value="#C9C4B8"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+        </Style>
+        <Style Selector="ToggleButton.ghost:checked /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#C9C4B8"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+        </Style>
+        <Style Selector="ToggleButton.ghost:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#22211D"/>
+            <Setter Property="Foreground" Value="#C9C4B8"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+        </Style>
+
+        <!-- Step number keycaps -->
+        <Style Selector="Border.keycap">
+            <Setter Property="Background" Value="#262420"/>
+            <Setter Property="CornerRadius" Value="5"/>
+            <Setter Property="Width" Value="19"/>
+            <Setter Property="Height" Value="19"/>
+        </Style>
+
+        <!-- Inputs -->
         <Style Selector="TextBox">
-            <Setter Property="Background" Value="#040408"/>
-            <Setter Property="Foreground" Value="#A8B8D0"/>
-            <Setter Property="BorderBrush" Value="#14142A"/>
-            <Setter Property="CornerRadius" Value="3"/>
-            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="9,7"/>
         </Style>
-        <Style Selector="TextBox:focus">
-            <Setter Property="BorderBrush" Value="#004488"/>
-        </Style>
-        <Style Selector="TextBox /template/ TextBlock#PART_Watermark">
-            <Setter Property="Foreground" Value="#505878"/>
-        </Style>
-
-        <!-- CheckBox -->
-        <Style Selector="CheckBox">
-            <Setter Property="Foreground" Value="#98A8C0"/>
+        <Style Selector="TextBox.mono">
+            <Setter Property="FontFamily" Value="Consolas,Menlo,monospace"/>
             <Setter Property="FontSize" Value="11"/>
         </Style>
 
-        <!-- TreeView: transparent, custom selection -->
+        <Style Selector="CheckBox">
+            <Setter Property="Foreground" Value="#A39F95"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+
+        <!-- Tree -->
         <Style Selector="TreeView">
             <Setter Property="Background" Value="Transparent"/>
         </Style>
         <Style Selector="TreeViewItem">
-            <Setter Property="Foreground" Value="#A0B0C8"/>
+            <Setter Property="Foreground" Value="#B3AEA2"/>
             <Setter Property="Padding" Value="0"/>
             <Setter Property="Margin" Value="0,1"/>
         </Style>
-        <Style Selector="TreeViewItem:selected /template/ Border#PART_LayoutRoot">
-            <Setter Property="Background" Value="#0C2848"/>
-            <Setter Property="CornerRadius" Value="3"/>
-        </Style>
-        <Style Selector="TreeViewItem:selected">
-            <Setter Property="Foreground" Value="#C0D4F0"/>
-        </Style>
 
-        <!-- ListBox: log viewer -->
+        <!-- Log list -->
         <Style Selector="ListBox">
             <Setter Property="Background" Value="Transparent"/>
         </Style>
         <Style Selector="ListBoxItem">
-            <Setter Property="Padding" Value="4,1"/>
+            <Setter Property="Padding" Value="6,1"/>
             <Setter Property="MinHeight" Value="18"/>
         </Style>
 
-        <!-- ProgressBar: PS3 blue -->
+        <!-- Progress -->
         <Style Selector="ProgressBar">
-            <Setter Property="Background" Value="#0A0A18"/>
-            <Setter Property="Foreground" Value="#005AAA"/>
+            <Setter Property="Background" Value="#2C2B27"/>
+            <Setter Property="Foreground" Value="#E8842A"/>
             <Setter Property="CornerRadius" Value="2"/>
-            <Setter Property="MinHeight" Value="6"/>
+            <Setter Property="MinHeight" Value="4"/>
         </Style>
 
-        <!-- Separator -->
+        <!-- Vertical separators -->
         <Style Selector="Border.sep-v">
             <Setter Property="Width" Value="1"/>
-            <Setter Property="Background" Value="#14142A"/>
-            <Setter Property="Margin" Value="6,4"/>
+            <Setter Property="Background" Value="#2C2B27"/>
+            <Setter Property="Margin" Value="5,4"/>
         </Style>
 
-        <!-- Scrollbar thin style -->
+        <Style Selector="GridSplitter">
+            <Setter Property="Background" Value="#242320"/>
+        </Style>
+
         <Style Selector="ScrollViewer /template/ ScrollBar">
-            <Setter Property="Width" Value="6"/>
+            <Setter Property="Width" Value="8"/>
         </Style>
 
+        <Style Selector="WrapPanel.toolbar > Button">
+            <Setter Property="Margin" Value="0,2,6,2"/>
+        </Style>
     </Window.Styles>
 
-    <Grid RowDefinitions="4,Auto,*,Auto,Auto">
+    <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
 
-        <!-- ═══ Row 0: Chrome accent strip ═══ -->
-        <Border Grid.Row="0" IsHitTestVisible="False">
-            <Border.Background>
-                <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                    <GradientStop Color="#001030" Offset="0"/>
-                    <GradientStop Color="#003880" Offset="0.2"/>
-                    <GradientStop Color="#0060BB" Offset="0.4"/>
-                    <GradientStop Color="#0080DD" Offset="0.5"/>
-                    <GradientStop Color="#0060BB" Offset="0.6"/>
-                    <GradientStop Color="#003880" Offset="0.8"/>
-                    <GradientStop Color="#001030" Offset="1"/>
-                </LinearGradientBrush>
-            </Border.Background>
-        </Border>
+        <!-- ═══ Row 0: Header bar ═══ -->
+        <Border Grid.Row="0" Background="#1B1A17" BorderBrush="#272622"
+                BorderThickness="0,0,0,1" Padding="14,9">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto,Auto">
 
-        <!-- ═══ Row 1: Header bar ═══ -->
-        <Border Grid.Row="1" Padding="16,10" BorderThickness="0,0,0,1" BorderBrush="#0C0C1A">
-            <Border.Background>
-                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                    <GradientStop Color="#0A0A14" Offset="0"/>
-                    <GradientStop Color="#070710" Offset="1"/>
-                </LinearGradientBrush>
-            </Border.Background>
-
-            <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*">
-
-                <!-- Row 0: Brand + source buttons + disk status -->
-                <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto,Auto" Margin="0,0,0,10">
-
-                    <!-- Logo -->
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,20,0">
-                        <TextBlock Text="PS3" FontSize="24" FontWeight="Bold" Foreground="#005AAA"
-                                   VerticalAlignment="Bottom"/>
-                        <TextBlock Text=" HDD TOOL" FontSize="18" FontWeight="Light" Foreground="#607888"
-                                   LetterSpacing="3" VerticalAlignment="Bottom" Margin="2,0,0,2"/>
-                    </StackPanel>
-
-                    <!-- Action buttons -->
-                    <Button Grid.Column="1" Content="Open Image" Click="OnOpenImage" Classes="primary"
-                            IsEnabled="{Binding !IsBusy}" Margin="0,0,4,0"/>
-                    <Button Grid.Column="2" Content="Open Drive" Click="OnOpenPhysicalDrive" Classes="primary"
-                            IsEnabled="{Binding !IsBusy}" Margin="0,0,4,0"/>
-                    <Button Grid.Column="3" Content="Extract PKG" Click="OnExtractPkg"
-                            IsEnabled="{Binding !IsBusy}" Margin="0,0,4,0"/>
-
-                    <!-- Spacer -->
-                    <Panel Grid.Column="4"/>
-
-                    <!-- Disk status -->
-                    <TextBlock Grid.Column="5" Text="{Binding DiskInfo.Source, FallbackValue='No disk loaded'}"
-                               VerticalAlignment="Center" Foreground="#607080" FontSize="11"
-                               FontFamily="Consolas,Courier New,monospace" Margin="0,0,12,0"/>
-
-                    <Border Classes="sep-v" Grid.Column="6"/>
-
-                    <Button Grid.Column="7" Content="About" Click="OnAbout" VerticalAlignment="Center"/>
-                </Grid>
-
-                <!-- Row 1: Key entry -->
-                <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto,Auto" VerticalAlignment="Center">
-                    <Button Grid.Column="0" Content="Keys" Click="OnSavedKeys"
-                            Margin="0,0,4,0" ToolTip.Tip="Load a saved EID Root Key"/>
-                    <Button Grid.Column="1" Content="Import" Click="OnImportKey"
-                            Margin="0,0,4,0" ToolTip.Tip="Import eid_root_key.bin, hdd_key.bin, or individual ATA key files (select two for data+tweak pair)"/>
-                    <Button Grid.Column="2" Content="Export" Click="OnExportKeys"
-                            Margin="0,0,8,0" ToolTip.Tip="Derive and export key files (ata_data_key.bin, hdd_key.bin, etc.) from EID Root Key"/>
-                    <TextBlock Text="ENCRYPTION KEY" VerticalAlignment="Center" Margin="0,0,10,0" Grid.Column="3"
-                               Foreground="#5888A8" FontSize="10" FontWeight="Bold" LetterSpacing="1.5"/>
-                    <TextBox Grid.Column="4" Text="{Binding EidRootKeyHex}"
-                             Watermark="EID root key (96 hex), or use Import for hdd_key.bin / ata_data_key.bin"
-                             FontFamily="Consolas,Courier New,monospace" FontSize="11"
-                             Margin="0,0,8,0"/>
-                    <Button Grid.Column="5" Content="Save" Click="OnSaveKey"
-                            Margin="0,0,6,0"
-                            ToolTip.Tip="Save current key with a nickname"/>
-                    <Button Grid.Column="6" Content="Decrypt" Click="OnDecrypt" Classes="primary"
-                            IsEnabled="{Binding IsDiskOpen}"/>
-                </Grid>
-
-                <!-- Row 2: Write action bar (only when mounted) -->
-                <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="4" Margin="0,10,0,0"
-                            IsVisible="{Binding IsFilesystemMounted}">
-                    <Button Content="Create Directory" Click="OnCreateDirectory"/>
-                    <Button Content="Copy File" Click="OnCopyFileToPs3"/>
-                    <Button Content="Copy Folder" Click="OnCopyFolderToPs3"/>
-                    <Button Content="Install PKG" Click="OnInstallPkgToHdd"/>
-                    <Border Classes="sep-v"/>
-                    <Button Content="Root" Click="OnGoToRoot"
-                            ToolTip.Tip="Deselect current node — return to root"/>
-                    <Button Content="Extract" Click="OnExtract"
-                            IsEnabled="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNotNull}}"/>
-                    <Button Content="Rename" Click="OnRename"
-                            IsEnabled="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNotNull}}"/>
-                    <Button Content="Delete" Click="OnDeleteSelected" Classes="danger"
-                            IsEnabled="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNotNull}}"/>
-                    <Border Classes="sep-v"/>
-                    <CheckBox Content="Fake Write" IsChecked="{Binding DryRunMode}" Margin="0,2,0,0"/>
-                    <CheckBox Content="Verbose" IsChecked="{Binding VerboseDiagnostics}" Margin="0,2,0,0"/>
+                <!-- Brand -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="9"
+                            VerticalAlignment="Center" Margin="0,0,14,0">
+                    <Border Width="10" Height="10" CornerRadius="3" Background="#E8842A"
+                            VerticalAlignment="Center"/>
+                    <TextBlock Text="PS3 / PS4 HDD Tool" FontSize="13" FontWeight="Medium"
+                               Foreground="#ECE9E2" VerticalAlignment="Center"/>
                 </StackPanel>
 
+                <!-- Session: source chip -->
+                <Border Grid.Column="1" Classes="chip" Margin="0,0,6,0"
+                        IsVisible="{Binding IsDiskOpen}">
+                    <TextBlock Text="{Binding DiskInfo.Source}" FontSize="11"
+                               Foreground="#A39F95" FontFamily="Consolas,Menlo,monospace"
+                               MaxWidth="220" TextTrimming="CharacterEllipsis"/>
+                </Border>
+
+                <!-- Session: mounted chip -->
+                <Border Grid.Column="2" Classes="chip" Background="#18241B" BorderBrush="#2A4530"
+                        IsVisible="{Binding IsFilesystemMounted}">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Ellipse Width="7" Height="7" Fill="#5FB86A" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding DetectedEncryptionType, StringFormat='{}mounted · {0}'}"
+                                   FontSize="11" Foreground="#5FB86A"/>
+                    </StackPanel>
+                </Border>
+
+                <Panel Grid.Column="3"/>
+
+                <Button Grid.Column="4" Content="Eject" Click="OnEject" Margin="0,0,6,0"
+                        IsVisible="{Binding IsDiskOpen}" IsEnabled="{Binding !IsBusy}"
+                        ToolTip.Tip="Close the current disk and return to setup"/>
+                <Button Grid.Column="5" Content="Extract PKG" Click="OnExtractPkg" Margin="0,0,6,0"
+                        ToolTip.Tip="Unpack a .pkg file to a folder on this computer" IsEnabled="{Binding CanUsePs3Tools}"/>
+                <Button Grid.Column="6" Content="About" Click="OnAbout"/>
             </Grid>
         </Border>
 
-        <!-- ═══ Row 2: Main split view ═══ -->
-        <Grid Grid.Row="2" ColumnDefinitions="320,1,*" Margin="0">
+        <!-- PS4 partition selection remains available in setup and in the browser. -->
+        <Border Grid.Row="1" Background="#1B1A17" BorderBrush="#272622"
+                BorderThickness="0,0,0,1" Padding="14,9" IsVisible="{Binding IsPs4}">
+            <Grid ColumnDefinitions="Auto,*,Auto" IsEnabled="{Binding !IsBusy}">
+                <TextBlock Text="PS4 partition" VerticalAlignment="Center"
+                           Foreground="#A39F95" Margin="0,0,12,0"/>
+                <ComboBox Name="Ps4PartitionPicker" Grid.Column="1" ItemsSource="{Binding Ps4Partitions}"
+                          SelectedItem="{Binding SelectedPs4Partition}" HorizontalAlignment="Stretch">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate><TextBlock Text="{Binding DisplayName}" FontSize="11"/></DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+                <Border Grid.Column="2" Classes="chip" Background="#18241B" BorderBrush="#2A4530" Margin="12,0,0,0">
+                    <TextBlock Text="Read-only · browse and extract" Foreground="#5FB86A" FontSize="11"/>
+                </Border>
+            </Grid>
+        </Border>
 
-            <!-- LEFT: Filesystem tree -->
-            <Border Grid.Column="0" Background="#07070D" Padding="0">
-                <Grid RowDefinitions="Auto,*">
-                    <Border Grid.Row="0" Padding="16,12,16,8" BorderThickness="0,0,0,1" BorderBrush="#0E0E1C">
-                        <Grid ColumnDefinitions="Auto,*,Auto">
-                            <TextBlock Classes="header" Text="FILESYSTEM" Margin="0"/>
-                            <!-- Free space display -->
-                            <TextBlock Grid.Column="1" Text="{Binding FreeSpaceText}"
-                                       FontSize="10" Foreground="#40A050"
-                                       VerticalAlignment="Center" HorizontalAlignment="Center"
-                                       IsVisible="{Binding IsFilesystemMounted}"
-                                       FontFamily="Consolas,Courier New,monospace"/>
-                            <!-- Partition count badge -->
-                            <Border Grid.Column="2" Background="#0C1828" CornerRadius="8"
-                                    Padding="8,2" IsVisible="{Binding IsDecrypted}"
-                                    VerticalAlignment="Center">
-                                <TextBlock Text="{Binding Partitions.Count, StringFormat='{}{0} partitions'}"
-                                           FontSize="10" Foreground="#6898B8"/>
+        <!-- Setup screen (until a filesystem is mounted) -->
+        <ScrollViewer Name="SetupScreen" Grid.Row="2" IsVisible="{Binding !IsFilesystemMounted}">
+            <StackPanel MaxWidth="560" Margin="24,30,24,26" HorizontalAlignment="Center">
+
+                <!-- Lockup -->
+                <TextBlock Text="PS3 / PS4 HDD Tool" FontSize="21" FontWeight="Medium"
+                           Foreground="#ECE9E2" HorizontalAlignment="Center"/>
+                <Border Width="26" Height="3" CornerRadius="2" Background="#E8842A"
+                        HorizontalAlignment="Center" Margin="0,9,0,0"/>
+                <TextBlock Text="Decrypt · browse · extract" FontSize="11.5"
+                           Foreground="#6B675E" HorizontalAlignment="Center"
+                           Margin="0,8,0,22"/>
+
+                <!-- Step 1: disk source -->
+                <Border Classes="card" Margin="0,0,0,12">
+                    <StackPanel>
+                        <Grid ColumnDefinitions="Auto,Auto,*,Auto" Margin="0,0,0,11">
+                            <Border Classes="keycap" Grid.Column="0">
+                                <TextBlock Text="1" FontSize="11" Foreground="#C9C4B8"
+                                           FontFamily="Consolas,Menlo,monospace"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Border>
+                            <TextBlock Grid.Column="1" Text="Disk source" FontSize="12.5"
+                                       FontWeight="Medium" Foreground="#ECE9E2"
+                                       VerticalAlignment="Center" Margin="9,0,0,0"/>
+                            <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6"
+                                        IsVisible="{Binding IsDiskOpen}" VerticalAlignment="Center">
+                                <Ellipse Width="7" Height="7" Fill="#5FB86A" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding DiskInfo.TotalSizeFormatted, StringFormat='{}attached · {0}'}"
+                                           FontSize="11" Foreground="#A39F95"
+                                           FontFamily="Consolas,Menlo,monospace"/>
+                            </StackPanel>
                         </Grid>
-                    </Border>
+                        <Grid ColumnDefinitions="*,12,*">
+                            <Button Grid.Column="0" Classes="tile" Click="OnOpenImage"
+                                    IsEnabled="{Binding !IsBusy}">
+                                <StackPanel HorizontalAlignment="Center">
+                                    <TextBlock Text="Image file" FontSize="12.5" Foreground="#ECE9E2"
+                                               HorizontalAlignment="Center"/>
+                                    <TextBlock Text=".img · .bin · .dd · .raw" FontSize="11"
+                                               Foreground="#6B675E" HorizontalAlignment="Center"
+                                               Margin="0,3,0,0"/>
+                                </StackPanel>
+                            </Button>
+                            <Button Grid.Column="2" Classes="tile" Click="OnOpenPhysicalDrive"
+                                    IsEnabled="{Binding !IsBusy}">
+                                <StackPanel HorizontalAlignment="Center">
+                                    <TextBlock Text="Physical drive" FontSize="12.5" Foreground="#ECE9E2"
+                                               HorizontalAlignment="Center"/>
+                                    <TextBlock Text="USB or SATA adapter" FontSize="11"
+                                               Foreground="#6B675E" HorizontalAlignment="Center"
+                                               Margin="0,3,0,0"/>
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                    </StackPanel>
+                </Border>
 
-                    <TreeView Grid.Row="1" ItemsSource="{Binding FileTree}"
-                              SelectedItem="{Binding SelectedNode}"
-                              Name="FileTreeView" Margin="4,4"
-                              DragDrop.AllowDrop="True">
-                        <TreeView.ItemTemplate>
-                            <TreeDataTemplate ItemsSource="{Binding Children}">
-                                <Grid ColumnDefinitions="Auto,*,Auto" Margin="2,2">
-                                    <TextBlock Text="{Binding Icon}" FontSize="13" VerticalAlignment="Center"
-                                               Grid.Column="0" Margin="0,0,8,0"/>
-                                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center"
-                                               Grid.Column="1" FontSize="12" TextTrimming="CharacterEllipsis"/>
-                                    <TextBlock Text="{Binding SizeFormatted}" FontSize="9"
-                                               Foreground="#7A8A9C" VerticalAlignment="Center"
-                                               Grid.Column="2" Margin="8,0,4,0"
-                                               FontFamily="Consolas,Courier New,monospace"/>
-                                </Grid>
-                            </TreeDataTemplate>
-                        </TreeView.ItemTemplate>
-                    </TreeView>
-                </Grid>
-            </Border>
+                <!-- Step 2: encryption key -->
+                <Border Classes="card" Margin="0,0,0,14">
+                    <StackPanel>
+                        <Grid ColumnDefinitions="Auto,Auto,*,Auto" Margin="0,0,0,11">
+                            <Border Classes="keycap" Grid.Column="0">
+                                <TextBlock Text="2" FontSize="11" Foreground="#C9C4B8"
+                                           FontFamily="Consolas,Menlo,monospace"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Grid.Column="1" Text="Encryption key" FontSize="12.5"
+                                       FontWeight="Medium" Foreground="#ECE9E2"
+                                       VerticalAlignment="Center" Margin="9,0,0,0"/>
+                            <TextBlock Grid.Column="3" Text="{Binding KeyStatusText}" FontSize="11"
+                                       Foreground="#5FB86A" VerticalAlignment="Center"
+                                       IsVisible="{Binding KeyStatusGood}"/>
+                            <TextBlock Grid.Column="3" Text="{Binding KeyStatusText}" FontSize="11"
+                                       Foreground="#6B675E" VerticalAlignment="Center"
+                                       IsVisible="{Binding !KeyStatusGood}"/>
+                        </Grid>
+                        <TextBox Classes="mono" Text="{Binding EidRootKeyHex}"
+                                 IsEnabled="{Binding !IsBusy}" Watermark="{Binding KeyWatermark}"/>
+                        <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,9,0,0">
+                            <Button Content="Saved keys" Click="OnSavedKeys" FontSize="11" Padding="10,4"
+                                    ToolTip.Tip="Load a previously saved key" IsEnabled="{Binding CanUsePs3Tools}"/>
+                            <Button Content="Import .bin" Click="OnImportKey" IsEnabled="{Binding !IsBusy}" FontSize="11" Padding="10,4"
+                                    ToolTip.Tip="Import a PS4 EAP HDD key (32 bytes), or PS3 EID/ATA keys"/>
+                            <Button Content="Export" Click="OnExportKeys" FontSize="11" Padding="10,4"
+                                    ToolTip.Tip="Derive and export key files from the EID root key" IsEnabled="{Binding CanUsePs3Tools}"/>
+                            <Button Content="Save" Click="OnSaveKey" FontSize="11" Padding="10,4"
+                                    ToolTip.Tip="Save the current key with a nickname" IsEnabled="{Binding CanUsePs3Tools}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
 
-            <!-- Divider -->
-            <Border Grid.Column="1" Background="#0E0E1C"/>
+                <!-- Step 3: decrypt -->
+                <Button Name="MountButton" Classes="primary" Click="OnDecrypt" Content="{Binding MountButtonText}"
+                        IsEnabled="{Binding CanMount}" FontSize="13" Padding="0,10"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                <TextBlock Text="{Binding WriteModeHint}" TextWrapping="Wrap" TextAlignment="Center"
+                           FontSize="11" Foreground="#6B675E" HorizontalAlignment="Center"
+                           Margin="0,7,0,0"/>
 
-            <!-- RIGHT: Details panel -->
-            <Grid Grid.Column="2" RowDefinitions="Auto,*">
+                <!-- Busy progress -->
+                <StackPanel IsVisible="{Binding IsBusy}" Margin="0,14,0,0">
+                    <TextBlock Text="{Binding ProgressText}" FontSize="11" Foreground="#F08C2E"
+                               FontFamily="Consolas,Menlo,monospace" HorizontalAlignment="Center"/>
+                    <ProgressBar Margin="0,7,0,0" Minimum="0" Maximum="100"
+                                 Value="{Binding ProgressValue}"
+                                 IsIndeterminate="{Binding IsProgressIndeterminate}"/>
+                </StackPanel>
 
-                <!-- Partition Info (collapsible) -->
-                <Border Grid.Row="0" IsVisible="{Binding IsDecrypted}" Padding="20,14,20,10"
-                        Background="#08080E" BorderThickness="0,0,0,1" BorderBrush="#0E0E1C">
-                    <ItemsControl ItemsSource="{Binding Partitions}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <StackPanel Orientation="Horizontal" Spacing="16"/>
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
+                <!-- Recent sources -->
+                <StackPanel IsVisible="{Binding !!RecentSources.Count}">
+                    <TextBlock Text="Recent sources" FontSize="11" Foreground="#6B675E"
+                               Margin="0,18,0,2"/>
+                    <ItemsControl ItemsSource="{Binding RecentSources}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Border Background="#0A0A14" CornerRadius="4" Padding="14,8"
-                                        BorderBrush="#14142A" BorderThickness="1">
-                                    <StackPanel Spacing="2">
-                                        <TextBlock Text="{Binding Name}" FontSize="12" Foreground="#A0B0C8"/>
-                                        <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <TextBlock Text="{Binding SizeFormatted}" FontSize="10"
-                                                       Foreground="#607888" FontFamily="Consolas,Courier New,monospace"/>
-                                            <TextBlock Text="{Binding Type}" FontSize="10" Foreground="#4878A8"/>
-                                        </StackPanel>
-                                    </StackPanel>
-                                </Border>
+                                <Button Classes="recent" Click="OnRecentClicked" IsEnabled="{Binding !$parent[Window].DataContext.IsBusy}">
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBlock Text="{Binding Name}" FontSize="11.5"
+                                                   Foreground="#C9C4B8" TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding MetaText}" FontSize="11"
+                                                   Foreground="#6B675E" Margin="10,0,0,0"
+                                                   FontFamily="Consolas,Menlo,monospace"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Button>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
+                </StackPanel>
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ═══ Row 1b: Browser (once mounted) ═══ -->
+        <Grid Name="BrowserScreen" Grid.Row="2" RowDefinitions="Auto,*" IsVisible="{Binding IsFilesystemMounted}">
+
+            <!-- Toolbar -->
+            <Border Grid.Row="0" Background="#1B1A17" BorderBrush="#272622"
+                    BorderThickness="0,0,0,1" Padding="10,7">
+                <WrapPanel Classes="toolbar" Orientation="Horizontal" IsEnabled="{Binding !IsBusy}">
+                    <Button Classes="primary" Content="Extract" Click="OnExtract"
+                            IsEnabled="{Binding CanExtract}"
+                            ToolTip.Tip="Extract the selected file or folder to this computer"/>
+                    <Button Content="Install PKG" Click="OnInstallPkgToHdd"
+                            IsVisible="{Binding !IsPs4}" IsEnabled="{Binding CanWriteFiles}"
+                            ToolTip.Tip="Install a .pkg onto the PS3 drive"/>
+                    <Button Content="Copy file" Click="OnCopyFileToPs3"
+                            IsVisible="{Binding !IsPs4}" IsEnabled="{Binding CanWriteFiles}"
+                            ToolTip.Tip="Copy a file from this computer onto the PS3 drive"/>
+                    <Button Content="Copy folder" Click="OnCopyFolderToPs3"
+                            IsVisible="{Binding !IsPs4}" IsEnabled="{Binding CanWriteFiles}"
+                            ToolTip.Tip="Copy a folder from this computer onto the PS3 drive"/>
+                    <Button Content="New folder" Click="OnCreateDirectory"
+                            IsVisible="{Binding !IsPs4}" IsEnabled="{Binding CanWriteFiles}"/>
+                    <Border Classes="sep-v"/>
+                    <Button Content="Root" Click="OnGoToRoot"
+                            ToolTip.Tip="Deselect — file operations target the root directory"/>
+                    <Border Classes="sep-v"/>
+                    <ToggleButton Classes="safety" IsChecked="{Binding DryRunMode}"
+                                  VerticalAlignment="Center"
+                                  IsVisible="{Binding !IsPs4}" IsEnabled="{Binding CanWriteFiles}"
+                                  ToolTip.Tip="When on, write operations are simulated and the disk is never modified">
+                        <Panel>
+                            <TextBlock Text="Fake writes on"
+                                       IsVisible="{Binding $parent[ToggleButton].IsChecked}"/>
+                            <TextBlock Text="Real writes, careful"
+                                       IsVisible="{Binding !$parent[ToggleButton].IsChecked}"/>
+                        </Panel>
+                    </ToggleButton>
+                </WrapPanel>
+            </Border>
+
+            <!-- Split: tree | details -->
+            <Grid Grid.Row="1" ColumnDefinitions="320,4,*">
+
+                <!-- Filesystem tree -->
+                <Border Grid.Column="0" Background="#191815" MinWidth="250">
+                    <Grid RowDefinitions="Auto,*">
+                        <Border Grid.Row="0" Padding="12,8" BorderThickness="0,0,0,1" BorderBrush="#232220">
+                            <Grid ColumnDefinitions="Auto,*,Auto">
+                                <TextBlock Text="Filesystem" FontSize="11" Foreground="#6B675E"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="{Binding FreeSpaceText}" FontSize="11"
+                                           Foreground="#5FB86A" FontFamily="Consolas,Menlo,monospace"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+                        <TreeView Grid.Row="1" ItemsSource="{Binding FileTree}"
+                                  SelectedItem="{Binding SelectedNode}"
+                                  Name="FileTreeView" Margin="4" IsEnabled="{Binding !IsBusy}"
+                                  DragDrop.AllowDrop="True">
+                            <TreeView.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="Extract…" Click="OnExtract"
+                                              IsEnabled="{Binding CanExtract}"/>
+                                    <MenuItem Name="RenameMenuItem" Header="Rename…" Click="OnRename"
+                                              IsVisible="{Binding !IsPs4}" IsEnabled="{Binding CanEditSelection}"/>
+                                    <MenuItem Header="Copy path" Click="OnCopyPath"
+                                              IsEnabled="{Binding CanExtract}"/>
+                                    <Separator IsVisible="{Binding !IsPs4}"/>
+                                    <MenuItem Name="DeleteMenuItem" Header="Delete" Click="OnDeleteSelected" Foreground="#F07070"
+                                              IsVisible="{Binding !IsPs4}" IsEnabled="{Binding CanEditSelection}"/>
+                                </ContextMenu>
+                            </TreeView.ContextMenu>
+                            <TreeView.ItemTemplate>
+                                <TreeDataTemplate ItemsSource="{Binding Children}">
+                                    <Grid ColumnDefinitions="Auto,*,Auto" Margin="2,2">
+                                        <TextBlock Text="{Binding Icon}" FontSize="13"
+                                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding Label}" FontSize="12"
+                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding SizeFormatted}" FontSize="10"
+                                                   Foreground="#6B675E" VerticalAlignment="Center"
+                                                   Margin="8,0,4,0" FontFamily="Consolas,Menlo,monospace"
+                                                   IsVisible="{Binding !IsDirectory}"/>
+                                    </Grid>
+                                </TreeDataTemplate>
+                            </TreeView.ItemTemplate>
+                        </TreeView>
+                    </Grid>
                 </Border>
 
-                <!-- File details -->
-                <Border Grid.Row="1" Padding="24,20" Background="#07070D">
-                    <Grid RowDefinitions="*">
-                        <!-- Has selection -->
-                        <StackPanel Spacing="12"
-                                    IsVisible="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNotNull}}">
+                <GridSplitter Grid.Column="1" ResizeDirection="Columns"/>
 
-                            <!-- File info card -->
-                            <Border Background="#0A0A12" CornerRadius="4" Padding="20,16"
-                                    BorderBrush="#14142A" BorderThickness="1">
+                <!-- Details -->
+                <ScrollViewer Grid.Column="2" MinWidth="280">
+                    <StackPanel Margin="14,12">
 
-                                <!-- Blue accent on left edge -->
-                                <Border.Styles>
-                                    <Style Selector="Border.info-card">
-                                        <Setter Property="BorderThickness" Value="3,0,0,0"/>
-                                        <Setter Property="BorderBrush" Value="#003D80"/>
-                                    </Style>
-                                </Border.Styles>
+                        <!-- Partition chips -->
+                        <ItemsControl ItemsSource="{Binding Partitions}" Margin="0,0,0,12" IsVisible="{Binding ShowPs3Partitions}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Classes="chip" Margin="0,0,6,6">
+                                        <StackPanel Orientation="Horizontal" Spacing="0">
+                                            <TextBlock Text="{Binding Name}" FontSize="11" Foreground="#C9C4B8"/>
+                                            <TextBlock Text="{Binding SizeFormatted, StringFormat='{} · {0}'}"
+                                                       FontSize="11" Foreground="#A39F95"
+                                                       FontFamily="Consolas,Menlo,monospace"/>
+                                            <TextBlock Text="{Binding Type, StringFormat='{} · {0}'}"
+                                                       FontSize="11" Foreground="#8A8578"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
 
-                                <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" >
-                                    <TextBlock Text="NAME" Foreground="#5888A8" Grid.Row="0"
-                                               FontSize="10" FontWeight="Bold" LetterSpacing="1" Margin="0,0,0,2"/>
-                                    <TextBlock Text="{Binding SelectedNode.Name}" Grid.Row="0" Grid.Column="1"
-                                               FontWeight="SemiBold" Foreground="#C0D4F0" FontSize="14"/>
-
-                                    <TextBlock Text="PATH" Foreground="#5888A8" Grid.Row="1"
-                                               FontSize="10" FontWeight="Bold" LetterSpacing="1" Margin="0,8,0,2"/>
-                                    <TextBlock Text="{Binding SelectedNode.FullPath}" Grid.Row="1" Grid.Column="1"
-                                               FontFamily="Consolas,Courier New,monospace" FontSize="11"
-                                               Foreground="#7898B8" Margin="0,8,0,0"/>
-
-                                    <TextBlock Text="SIZE" Foreground="#5888A8" Grid.Row="2"
-                                               FontSize="10" FontWeight="Bold" LetterSpacing="1" Margin="0,8,0,2"/>
-                                    <TextBlock Text="{Binding SelectedNode.SizeFormatted}" Grid.Row="2" Grid.Column="1"
-                                               Foreground="#A0B0C8" FontSize="12" Margin="0,8,0,0"/>
-
-                                    <TextBlock Text="MODIFIED" Foreground="#5888A8" Grid.Row="3"
-                                               FontSize="10" FontWeight="Bold" LetterSpacing="1" Margin="0,8,0,2"/>
-                                    <TextBlock Text="{Binding SelectedNode.Modified}" Grid.Row="3" Grid.Column="1"
-                                               Foreground="#A0B0C8" FontSize="12" Margin="0,8,0,0"/>
-
-                                    <TextBlock Text="MODE" Foreground="#5888A8" Grid.Row="4"
-                                               FontSize="10" FontWeight="Bold" LetterSpacing="1" Margin="0,8,0,2"/>
-                                    <TextBlock Text="{Binding SelectedNode.Permissions}" Grid.Row="4" Grid.Column="1"
-                                               FontFamily="Consolas,Courier New,monospace"
-                                               Foreground="#7898B8" FontSize="11" Margin="0,8,0,0"/>
-                                </Grid>
+                        <!-- Selected node -->
+                        <StackPanel IsVisible="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNotNull}}">
+                            <Border Classes="card">
+                                <StackPanel>
+                                    <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,0,0,9">
+                                        <TextBlock Text="{Binding SelectedNode.Icon}" FontSize="15"
+                                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding SelectedNode.Name}"
+                                                   FontSize="13" FontWeight="Medium" Foreground="#ECE9E2"
+                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding SelectedNode.SizeFormatted}"
+                                                   FontSize="11" Foreground="#6B675E"
+                                                   FontFamily="Consolas,Menlo,monospace"
+                                                   VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                    </Grid>
+                                    <Grid ColumnDefinitions="76,*" RowDefinitions="Auto,Auto,Auto,Auto">
+                                        <TextBlock Text="Path" FontSize="11" Foreground="#6B675E" Margin="0,3"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding SelectedNode.FullPath}"
+                                                   FontSize="11" Foreground="#D9A05C" Margin="0,3"
+                                                   FontFamily="Consolas,Menlo,monospace" TextWrapping="Wrap"/>
+                                        <TextBlock Grid.Row="1" Text="Size" FontSize="11" Foreground="#6B675E" Margin="0,3"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedNode.SizeFormatted}"
+                                                   FontSize="11" Foreground="#D8D4CA" Margin="0,3"
+                                                   FontFamily="Consolas,Menlo,monospace"/>
+                                        <TextBlock Grid.Row="2" Text="Modified" FontSize="11" Foreground="#6B675E" Margin="0,3"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedNode.Modified}"
+                                                   FontSize="11" Foreground="#D8D4CA" Margin="0,3"
+                                                   FontFamily="Consolas,Menlo,monospace"/>
+                                        <TextBlock Grid.Row="3" Text="Mode" FontSize="11" Foreground="#6B675E" Margin="0,3"/>
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedNode.Permissions}"
+                                                   FontSize="11" Foreground="#D8D4CA" Margin="0,3"
+                                                   FontFamily="Consolas,Menlo,monospace"/>
+                                    </Grid>
+                                </StackPanel>
                             </Border>
 
                             <!-- Image preview -->
-                            <Border CornerRadius="4" ClipToBounds="True"
-                                    IsVisible="{Binding HasImagePreview}" MaxHeight="320"
-                                    Background="#04040A" BorderBrush="#14142A" BorderThickness="1">
+                            <Border Background="#121110" BorderBrush="#2C2B27" BorderThickness="1"
+                                    CornerRadius="10" ClipToBounds="True" Margin="0,10,0,0"
+                                    MaxHeight="320" IsVisible="{Binding HasImagePreview}">
                                 <Image Source="{Binding ImagePreview}" Stretch="Uniform"
                                        MaxHeight="300" Margin="8"/>
                             </Border>
                         </StackPanel>
 
                         <!-- No selection -->
-                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8"
-                                    IsVisible="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNull}}">
-                            <TextBlock Text="📁" FontSize="32" HorizontalAlignment="Center" Opacity="0.15"/>
-                            <TextBlock Text="Select a file or folder" Foreground="#303858"
-                                       FontSize="13" HorizontalAlignment="Center"/>
+                        <StackPanel IsVisible="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNull}}"
+                                    HorizontalAlignment="Center" Margin="0,80,0,0">
+                            <TextBlock Text="Select a file or folder" FontSize="13" Foreground="#6B675E"
+                                       HorizontalAlignment="Center"/>
+                            <TextBlock Text="{Binding SelectionHint}"
+                                       FontSize="11" Foreground="#56534B" HorizontalAlignment="Center"
+                                       Margin="0,5,0,0"/>
                         </StackPanel>
-                    </Grid>
-                </Border>
+
+                    </StackPanel>
+                </ScrollViewer>
             </Grid>
         </Grid>
 
-        <!-- ═══ Row 3: Log panel ═══ -->
-        <Border Grid.Row="3" MaxHeight="150" Background="#06060C"
-                BorderThickness="0,1,0,0" BorderBrush="#0E0E1C">
-            <Grid RowDefinitions="Auto,*">
-                <Border Grid.Row="0" Padding="16,8,16,6" BorderThickness="0,0,0,1" BorderBrush="#0A0A16">
-                    <TextBlock Classes="header" Text="LOG" Margin="0"/>
-                </Border>
-                <ListBox Grid.Row="1" ItemsSource="{Binding LogMessages}" Name="LogList"
-                         FontFamily="Consolas,Courier New,monospace" FontSize="10"
-                         Background="Transparent" Margin="8,2">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding}" Foreground="#607080"/>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
-            </Grid>
+        <!-- ═══ Row 2: Expanded log ═══ -->
+        <Border Grid.Row="3" Background="#121110" BorderBrush="#272622" BorderThickness="0,1,0,0"
+                Height="160" IsVisible="{Binding #LogToggle.IsChecked}">
+            <ListBox ItemsSource="{Binding LogMessages}" Name="LogList"
+                     FontFamily="Consolas,Menlo,monospace" FontSize="10.5" Margin="6,4">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" Foreground="#87837A"/>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
         </Border>
 
-        <!-- ═══ Row 4: Status bar ═══ -->
-        <Border Grid.Row="4" Padding="16,6" BorderThickness="0,1,0,0" BorderBrush="#0A0A16">
-            <Border.Background>
-                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                    <GradientStop Color="#08080F" Offset="0"/>
-                    <GradientStop Color="#050508" Offset="1"/>
-                </LinearGradientBrush>
-            </Border.Background>
-            <Grid ColumnDefinitions="*,Auto,Auto">
-                <TextBlock Text="{Binding StatusText}" Foreground="#5888A8"
-                           VerticalAlignment="Center" FontSize="11"/>
-                <TextBlock Grid.Column="1" Text="{Binding ProgressText}" Foreground="#0070CC"
-                           VerticalAlignment="Center" Margin="16,0" FontSize="11"
-                           FontFamily="Consolas,Courier New,monospace"
+        <!-- ═══ Row 3: Status strip ═══ -->
+        <Border Grid.Row="4" Background="#1B1A17" BorderBrush="#272622" BorderThickness="0,1,0,0"
+                Padding="10,4">
+            <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto">
+                <ToggleButton Grid.Column="0" Name="LogToggle" Classes="ghost"
+                              ToolTip.Tip="Show or hide the activity log">
+                    <StackPanel Orientation="Horizontal" Spacing="5">
+                        <TextBlock Text="▴" FontSize="10" VerticalAlignment="Center"
+                                   IsVisible="{Binding !$parent[ToggleButton].IsChecked}"/>
+                        <TextBlock Text="▾" FontSize="10" VerticalAlignment="Center"
+                                   IsVisible="{Binding $parent[ToggleButton].IsChecked}"/>
+                        <TextBlock Text="{Binding LogMessages.Count, StringFormat='{}Log · {0}'}"
+                                   FontSize="11" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </ToggleButton>
+                <Border Grid.Column="1" Classes="sep-v"/>
+                <TextBlock Grid.Column="2" Text="{Binding StatusText}" FontSize="11"
+                           Foreground="#A39F95" VerticalAlignment="Center" Margin="6,0"
+                           TextTrimming="CharacterEllipsis"/>
+                <CheckBox Grid.Column="3" Content="Verbose" IsChecked="{Binding VerboseDiagnostics}"
+                          Margin="8,0" VerticalAlignment="Center"
+                          ToolTip.Tip="Extra diagnostic detail in the log"/>
+                <TextBlock Grid.Column="4" Text="{Binding ProgressText}" FontSize="11"
+                           Foreground="#F08C2E" FontFamily="Consolas,Menlo,monospace"
+                           VerticalAlignment="Center" Margin="10,0"
                            IsVisible="{Binding IsBusy}"/>
-                <ProgressBar Grid.Column="2" Width="180" Height="6"
-                             IsVisible="{Binding IsBusy}"
-                             Minimum="0" Maximum="100"
-                             Value="{Binding ProgressValue}"
-                             IsIndeterminate="{Binding IsProgressIndeterminate}"/>
+                <ProgressBar Grid.Column="5" Width="150" IsVisible="{Binding IsBusy}"
+                             Minimum="0" Maximum="100" Value="{Binding ProgressValue}"
+                             IsIndeterminate="{Binding IsProgressIndeterminate}"
+                             VerticalAlignment="Center"/>
             </Grid>
         </Border>
     </Grid>

@@ -17,7 +17,16 @@ public partial class MainViewModel : ObservableObject
     private DecryptedDiskSource? _decryptedSource;
     private Ufs2FileSystem? _fileSystem;
     private Ps3DiskLayout? _diskLayout;
-    private readonly DriveProfileDatabase _driveProfiles = new();
+    private readonly DriveProfileDatabase _driveProfiles;
+
+    public MainViewModel(DriveProfileDatabase? driveProfiles = null, RecentSourcesStore? recentSourcesStore = null)
+    {
+        _driveProfiles = driveProfiles ?? new DriveProfileDatabase();
+        _recentSourcesStore = recentSourcesStore ?? new RecentSourcesStore();
+        foreach (var entry in _recentSourcesStore.Load()) RecentSources.Add(entry);
+        Partitions.CollectionChanged += (_, _) => OnPropertyChanged(nameof(PartitionCount));
+        Ps4Partitions.CollectionChanged += (_, _) => OnPropertyChanged(nameof(PartitionCount));
+    }
 
     // Stored for reopening with write access
     private string? _physicalDrivePath;
@@ -52,6 +61,7 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnSelectedNodeChanged(FileTreeNode? value)
     {
+        NotifyCapabilities();
         if (value != null && value.IsDirectory && !value.ChildrenLoaded)
         {
             _ = ExpandNodeAsync(value);
@@ -71,7 +81,9 @@ public partial class MainViewModel : ObservableObject
 
     private async Task LoadImagePreviewAsync(FileTreeNode node)
     {
-        if (_fileSystem == null) return;
+        var filesystem = _fileSystem;
+        int generation = _mountGeneration;
+        if (filesystem == null) return;
 
         try
         {
@@ -85,10 +97,11 @@ public partial class MainViewModel : ObservableObject
             byte[]? imageData = null;
             await Task.Run(() =>
             {
-                var inode = _fileSystem.ReadInode(node.InodeNumber);
-                imageData = _fileSystem.ReadInodeData(inode);
+                var inode = filesystem.ReadInode(node.InodeNumber);
+                imageData = filesystem.ReadInodeData(inode);
             });
 
+            if (generation != _mountGeneration || SelectedNode != node) return;
             if (imageData != null && imageData.Length > 0)
             {
                 using var ms = new MemoryStream(imageData);
@@ -98,6 +111,7 @@ public partial class MainViewModel : ObservableObject
         }
         catch
         {
+            if (generation != _mountGeneration || SelectedNode != node) return;
             ImagePreview = null;
             HasImagePreview = false;
         }
@@ -113,110 +127,64 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     public async Task OpenImageAsync(string filePath)
     {
+        if (IsBusy) return;
         try
         {
             IsBusy = true;
+            CloseDisk();
             StatusText = $"Opening {Path.GetFileName(filePath)}...";
-            Log($"Opening image: {filePath}");
-
-            await Task.Run(() =>
+            var opened = await Task.Run(() =>
             {
-                _diskSource?.Dispose();
-                _decryptedSource?.Dispose();
-
-                _diskSource = new ImageDiskSource(filePath);
+                var source = new ImageDiskSource(filePath);
+                try { return (Source: source, Layout: Ps4DiskLayout.TryRead(source)); }
+                catch { source.Dispose(); throw; }
             });
-
-            IsDiskOpen = true;
-            IsDecrypted = false;
-            IsFilesystemMounted = false;
-            FileTree.Clear();
-            Partitions.Clear();
-
-            DiskInfo = new DiskInfo
-            {
-                Source = _diskSource!.Description,
-                TotalSize = _diskSource.TotalSize,
-                TotalSizeFormatted = FormatSize(_diskSource.TotalSize),
-                IsEncrypted = true,
-                Status = "Disk opened — enter EID Root Key and decrypt."
-            };
-
-            StatusText = $"Disk image opened: {FormatSize(_diskSource.TotalSize)}. Enter EID Root Key to decrypt.";
+            _diskSource = opened.Source;
+            FinishOpeningDisk(opened.Layout);
+            RecordRecentSource(filePath, "image", _diskSource.TotalSize);
             Log($"Image loaded: {_diskSource.SectorCount} sectors, {FormatSize(_diskSource.TotalSize)}");
         }
-        catch (Exception ex)
-        {
-            StatusText = $"Error: {ex.Message}";
-            Log($"ERROR: {ex.Message}");
-        }
-        finally
-        {
-            IsBusy = false;
-        }
+        catch (Exception ex) { StatusText = $"Error: {ex.Message}"; Log(StatusText); }
+        finally { IsBusy = false; }
     }
 
-    /// <summary>
-    /// Open a physical drive.
-    /// </summary>
     [RelayCommand]
     public async Task OpenPhysicalDriveAsync((string Path, long Size) drive)
     {
+        if (IsBusy) return;
         try
         {
             IsBusy = true;
+            CloseDisk();
             StatusText = $"Opening {drive.Path}...";
-            Log($"Opening physical drive: {drive.Path}");
-
-            await Task.Run(() =>
+            var opened = await Task.Run(() =>
             {
-                // Check for 4K native drives — incompatible with PS3
                 var (logical, physical) = PhysicalDiskSource.DetectSectorSizes(drive.Path);
-                if (logical > 0)
-                    Log($"Drive sector sizes: logical={logical}, physical={physical} ({(logical == 512 && physical == 512 ? "512n" : logical == 512 ? "512e" : "4Kn")})");
-
                 if (logical >= 4096)
-                    throw new InvalidOperationException(
-                        $"This drive uses 4K native sectors (logical={logical}, physical={physical}). " +
-                        "The PS3 requires 512-byte logical sectors (512n or 512e). " +
-                        "4K native drives will cause filesystem corruption on the PS3. " +
-                        "Use a drive with 512-byte logical sector support.");
-
-                _diskSource?.Dispose();
-                _decryptedSource?.Dispose();
-
-                _diskSource = new PhysicalDiskSource(drive.Path, drive.Size, writable: true);
-                _physicalDrivePath = drive.Path;
-                _physicalDriveSize = drive.Size;
+                    throw new NotSupportedException($"This reader requires 512-byte logical sectors (drive reports {logical}).");
+                // Detect PS4 before requesting any write access to a physical device.
+                IDiskSource source = new PhysicalDiskSource(drive.Path, drive.Size, writable: false);
+                try
+                {
+                    var layout = Ps4DiskLayout.TryRead(source);
+                    if (layout == null)
+                    {
+                        source.Dispose();
+                        source = new PhysicalDiskSource(drive.Path, drive.Size, writable: true);
+                    }
+                    return (Source: source, Layout: layout);
+                }
+                catch { source.Dispose(); throw; }
             });
-
-            IsDiskOpen = true;
-            IsDecrypted = false;
-            IsFilesystemMounted = false;
-            FileTree.Clear();
-            Partitions.Clear();
-
-            DiskInfo = new DiskInfo
-            {
-                Source = _diskSource!.Description,
-                TotalSize = _diskSource.TotalSize,
-                TotalSizeFormatted = FormatSize(_diskSource.TotalSize),
-                IsEncrypted = true,
-                Status = "Drive opened — enter EID Root Key and decrypt."
-            };
-
-            StatusText = $"Physical drive opened. Enter EID Root Key to decrypt.";
-            Log($"Drive opened: {_diskSource.SectorCount} sectors, {FormatSize(_diskSource.TotalSize)}");
+            _diskSource = opened.Source;
+            _physicalDrivePath = drive.Path;
+            _physicalDriveSize = drive.Size;
+            FinishOpeningDisk(opened.Layout);
+            RecordRecentSource(drive.Path, "drive", _diskSource.TotalSize);
+            Log($"Drive loaded: {_diskSource.Description}");
         }
-        catch (Exception ex)
-        {
-            StatusText = $"Error: {ex.Message}";
-            Log($"ERROR: {ex.Message}");
-        }
-        finally
-        {
-            IsBusy = false;
-        }
+        catch (Exception ex) { StatusText = $"Error: {ex.Message}"; Log(StatusText); }
+        finally { IsBusy = false; }
     }
 
     /// <summary>
@@ -243,6 +211,8 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     public async Task DecryptAsync()
     {
+        if (IsBusy) return;
+        if (IsPs4) { await MountPs4Async(); return; }
         if (_diskSource == null || string.IsNullOrWhiteSpace(EidRootKeyHex))
         {
             StatusText = "Please open a disk and enter the EID Root Key first.";
@@ -253,6 +223,7 @@ public partial class MainViewModel : ObservableObject
         {
             IsBusy = true;
             IsProgressIndeterminate = true;
+            ResetMountedFilesystem();
             StatusText = "Parsing EID Root Key...";
 
             // Start fresh log section
@@ -895,7 +866,7 @@ public partial class MainViewModel : ObservableObject
 
                                     _decryptedSource?.Dispose();
                                     _decryptedSource = new DecryptedDiskSource(
-                                        _diskSource, dataKey, tweakKey, useBswap);
+                                        new NonDisposingDiskSource(_diskSource), dataKey, tweakKey, useBswap);
                                     break;
                                 }
                             }
@@ -926,7 +897,7 @@ public partial class MainViewModel : ObservableObject
                                     foundBswap = useBswap;
                                     _decryptedSource?.Dispose();
                                     _decryptedSource = new DecryptedDiskSource(
-                                        _diskSource, dataKey, tweakKey, useBswap);
+                                        new NonDisposingDiskSource(_diskSource), dataKey, tweakKey, useBswap);
                                     Log($"    [{label}] Fine scan found UFS2 at sector 0x{scanSec:X}");
                                 }
                             }
@@ -955,7 +926,7 @@ public partial class MainViewModel : ObservableObject
                 {
                     _decryptedSource?.Dispose();
                     var cbcSource = new DecryptedDiskSourceCbc(
-                        _diskSource, cbcKeys.AtaDataKey, foundBswap);
+                        new NonDisposingDiskSource(_diskSource), cbcKeys.AtaDataKey, foundBswap);
                     _fileSystem = new Ufs2FileSystem(cbcSource, foundPartitionSector);
 
                     // Store for reopening with write access
@@ -1111,13 +1082,13 @@ public partial class MainViewModel : ObservableObject
                 Log($"Log file saved to: {LogFilePath}");
                 LogSeparator();
 
-                IsDecrypted = true;
+                IsDecrypted = false;
                 StatusText = $"No UFS2 found. Log saved to Desktop (PS3HddTool_log.txt).";
 
                 if (DiskInfo != null)
                 {
-                    DiskInfo.IsDecrypted = true;
-                    DiskInfo.Status = "Decrypted but UFS2 not found — see log on Desktop.";
+                    DiskInfo.IsDecrypted = false;
+                    DiskInfo.Status = "No filesystem found — check the key and disk format.";
                 }
             }
         }
@@ -1237,6 +1208,7 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     private async Task LoadDirectoryTreeAsync()
     {
+        if (IsPs4) { await LoadPs4RootAsync(); return; }
         if (_fileSystem == null) return;
 
         try
@@ -1744,6 +1716,7 @@ public partial class MainViewModel : ObservableObject
 
     public async Task ExpandNodeAsync(FileTreeNode node)
     {
+        if (IsPs4) { await ExpandPs4NodeAsync(node); return; }
         if (!node.IsDirectory || node.ChildrenLoaded || _fileSystem == null) return;
 
         try
@@ -1840,7 +1813,8 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     public async Task ExtractAsync((FileTreeNode Node, string OutputPath) args)
     {
-        if (_fileSystem == null) return;
+        if (_fileSystem == null || IsBusy || !IsFilesystemMounted) return;
+        var filesystem = _fileSystem;
 
         try
         {
@@ -1855,7 +1829,9 @@ public partial class MainViewModel : ObservableObject
 
             await Task.Run(() =>
             {
-                var inode = _fileSystem.ReadInode(node.InodeNumber);
+                var inode = filesystem.ReadInode(node.InodeNumber);
+                if (inode.FileType is not (Ufs2FileType.RegularFile or Ufs2FileType.Directory))
+                    throw new NotSupportedException("Only regular files and directories can be extracted.");
 
                 if (node.IsDirectory)
                 {
@@ -1863,7 +1839,7 @@ public partial class MainViewModel : ObservableObject
                     var progress = new Progress<string>(p =>
                         ProgressText = $"Extracting: {Path.GetFileName(p)}");
 
-                    _fileSystem.ExtractDirectory(inode, outputPath, progress);
+                    filesystem.ExtractDirectory(inode, outputPath, progress);
                 }
                 else
                 {
@@ -1871,12 +1847,11 @@ public partial class MainViewModel : ObservableObject
                     if (!string.IsNullOrEmpty(dir))
                         Directory.CreateDirectory(dir);
 
-                    using var fs = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536);
                     long totalSize = inode.Size;
                     var startTime = DateTime.UtcNow;
                     long lastUpdate = 0;
 
-                    _fileSystem.ExtractInodeToStream(inode, fs, bytesWritten =>
+                    filesystem.ExtractFile(inode, outputPath, bytesWritten =>
                     {
                         // Throttle UI updates to every ~500KB
                         if (bytesWritten - lastUpdate < 512 * 1024 && bytesWritten < totalSize) return;
@@ -1984,6 +1959,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     public async Task CreateDirectoryAsync()
     {
+        if (RejectPs4Write() || IsBusy) return;
         if (_fileSystem == null)
         {
             StatusText = "Mount a filesystem first.";
@@ -2072,6 +2048,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     public async Task CopyFileToPs3Async()
     {
+        if (RejectPs4Write() || IsBusy) return;
         if (_fileSystem == null)
         {
             StatusText = "Mount a filesystem first.";
@@ -2082,6 +2059,7 @@ public partial class MainViewModel : ObservableObject
 
     public async Task CopyFileToPs3WithPath(string sourceFilePath)
     {
+        if (RejectPs4Write() || IsBusy) return;
         if (_fileSystem == null) return;
 
         long parentInodeNumber = 2;
@@ -2230,6 +2208,7 @@ public partial class MainViewModel : ObservableObject
 
     public async Task CopyFolderToPs3WithPath(string sourceFolderPath)
     {
+        if (RejectPs4Write() || IsBusy) return;
         if (_fileSystem == null) return;
 
         long parentInodeNumber = 2;
@@ -2379,6 +2358,7 @@ public partial class MainViewModel : ObservableObject
 
     public async Task DeleteSelectedAsync()
     {
+        if (RejectPs4Write() || IsBusy) return;
         try
         {
             if (SelectedNode == null || _fileSystem == null)
@@ -2456,6 +2436,7 @@ public partial class MainViewModel : ObservableObject
 
     public async Task RenameSelectedAsync(string newName)
     {
+        if (RejectPs4Write() || IsBusy) return;
         try
         {
             if (SelectedNode == null || _fileSystem == null)
@@ -2547,12 +2528,7 @@ public partial class MainViewModel : ObservableObject
         return false;
     }
 
-    public void Cleanup()
-    {
-        _fileSystem = null;
-        _decryptedSource?.Dispose();
-        _diskSource?.Dispose();
-    }
+    public void Cleanup() => CloseDisk();
 
     public async Task ExtractPkgAsync(string pkgPath, string outputDir)
     {
@@ -2604,6 +2580,7 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     public async Task InstallPkgToHddAsync(string pkgPath)
     {
+        if (RejectPs4Write() || IsBusy) return;
         if (_fileSystem == null) return;
 
         string? tempDir = null;

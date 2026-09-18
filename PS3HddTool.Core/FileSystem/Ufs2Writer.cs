@@ -216,6 +216,8 @@ public class Ufs2Writer
 
     public Ufs2Writer(Ufs2FileSystem fs, IDiskSource disk, long partitionOffsetBytes, bool dryRun, Action<string> log)
     {
+        if (fs.Superblock?.IsLittleEndian == true || disk is Ps4PartitionSource)
+            throw new NotSupportedException("PS4 filesystem support is read-only.");
         _fs = fs;
         _disk = disk;
         _partitionOffset = partitionOffsetBytes;
