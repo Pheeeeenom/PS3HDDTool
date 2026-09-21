@@ -2,6 +2,22 @@
 
 A .NET 10 and Avalonia application for browsing console hard drives and raw disk images on Windows, Linux, and macOS.
 
+## Screenshots
+
+Captured from the application using synthetic test images.
+
+**Guided setup** — choose an image or physical drive, import its key, and mount the filesystem.
+
+![Setup screen with disk source selection and encryption key import](docs/screenshots/setup.png)
+
+**PS4 read-only browser** — select a partition, browse folders, inspect file details, and extract files to your computer.
+
+![PS4 browser with partition selection, read-only indicator, file tree, and Extract action](docs/screenshots/ps4-browser.png)
+
+**PS3 browser** — browse and extract files, with the existing PS3 write tools and fake-write toggle available.
+
+![PS3 browser with file details, PKG installation, copy tools, and fake-write mode enabled](docs/screenshots/ps3-browser.png)
+
 ## Supported disks
 
 | Source | Keys | Available operations |

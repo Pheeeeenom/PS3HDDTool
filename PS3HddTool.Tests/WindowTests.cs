@@ -140,6 +140,14 @@ internal static class WindowTests
                 Check(Menu("Rename…").IsEnabled && Menu("Delete").IsEnabled, "PS3 context actions unavailable.");
                 menu.Close();
                 Render("workbench-ps3-narrow");
+                // Full-size browser capture for the README, with the diagnostic log collapsed.
+                window.Width = 1200;
+                window.Height = 800;
+                Find<ToggleButton>("LogToggle").IsChecked = false;
+                Render("ps3-window");
+                window.Width = 960;
+                window.Height = 660;
+                Find<ToggleButton>("LogToggle").IsChecked = true;
                 vm.Eject();
                 CheckScreen(false);
                 Render("workbench-recents-narrow");
